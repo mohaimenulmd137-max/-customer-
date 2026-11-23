@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">বাকির খাতা</string>
+    <string name="default_shop_name">আমার দোকান</string>
+    <string name="currency_bdt">৳</string>
+</resources>

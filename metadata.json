@@ -1,0 +1,6 @@
+{
+  "name": "বাকির খাতা",
+  "description": "দোকানের বাকির হিসাব, নগদ বিক্রি, মেমো, ক্যাশবক্স, খরচ, দৈনিক ও মাসিক রিপোর্ট, হালখাতা, পিডিএফ ও ব্যাকআপের সম্পূর্ণ অফলাইন অ্যাপ।",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
