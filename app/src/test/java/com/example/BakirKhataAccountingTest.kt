@@ -294,4 +294,269 @@ class BakirKhataAccountingTest {
         assertEquals(bdt(600), perm.totalPurchasesPaisa)
         assertTrue(db.temporaryCustomerDao().getById(temp.id)!!.isConverted)
     }
+
+    @Test
+    fun testHalKhataCollectionCloseVsPartialForPermanentAndTempCustomers() = runBlocking {
+        // Permanent customer: partial payment leaves remaining, full payment closes to zero
+        val perm = (repo.createCustomer("সোহেল", "চাঁদপুর", openingBalancePaisa = bdt(1000)) as OperationResult.Success).data
+        val partialPerm = repo.recordQuickPayment(perm.id, bdt(400), "হালখাতা জমা", requestToken = "hk-coll-1")
+        assertTrue(partialPerm is OperationResult.Success)
+        assertEquals(bdt(600), db.customerDao().getById(perm.id)!!.currentBalancePaisa)
+
+        val fullClosePerm = repo.recordQuickPayment(perm.id, bdt(600), "হালখাতা জমা", requestToken = "hk-coll-2")
+        assertTrue(fullClosePerm is OperationResult.Success)
+        assertEquals(0L, db.customerDao().getById(perm.id)!!.currentBalancePaisa)
+
+        // Temporary customer: partial payment leaves remaining, full payment closes to zero
+        val temp = (repo.createTemporaryCustomer("অস্থায়ী মনির", "বাজার") as OperationResult.Success).data
+        repo.addTemporaryEntry(temp.id, "CREDIT", "মাল বাকি", bdt(500), 0L, "")
+        assertEquals(bdt(500), db.temporaryCustomerDao().getById(temp.id)!!.outstandingPaisa)
+
+        repo.addTemporaryEntry(temp.id, "PAYMENT", "হালখাতা জমা", bdt(200), bdt(200), "হালখাতা")
+        assertEquals(bdt(300), db.temporaryCustomerDao().getById(temp.id)!!.outstandingPaisa)
+
+        repo.addTemporaryEntry(temp.id, "PAYMENT", "হালখাতা জমা", bdt(300), bdt(300), "হালখাতা")
+        assertEquals(0L, db.temporaryCustomerDao().getById(temp.id)!!.outstandingPaisa)
+
+        // Cashbox reflects total collected cash (400 + 600 + 200 + 300 = 1500 BDT)
+        val cashbox = repo.computeCashboxSummary(db.cashboxDao().getAllOnce(), AppSettingsEntity())
+        assertEquals(bdt(1500), cashbox.expectedBalancePaisa)
+    }
+
+    @Test
+    fun testHalKhataFreshResetVsCarryoverAndOldPeriodHistory() = runBlocking {
+        // Customer A pays 100% -> 0 balance
+        val custA = (repo.createCustomer("সালেহ", "বাড্ডা", openingBalancePaisa = bdt(700)) as OperationResult.Success).data
+        repo.recordQuickPayment(custA.id, bdt(700), requestToken = "fresh-pay-a")
+        assertEquals(0L, db.customerDao().getById(custA.id)!!.currentBalancePaisa)
+
+        // Customer B keeps 300 BDT unpaid
+        val custB = (repo.createCustomer("বশির", "উত্তরা", openingBalancePaisa = bdt(800)) as OperationResult.Success).data
+        repo.recordQuickPayment(custB.id, bdt(500), requestToken = "fresh-pay-b")
+        assertEquals(bdt(300), db.customerDao().getById(custB.id)!!.currentBalancePaisa)
+
+        // Temp 1 cleared, Temp 2 keeps 250 BDT
+        val tempCleared = (repo.createTemporaryCustomer("অস্থায়ী শোধ", "হাট") as OperationResult.Success).data
+        repo.addTemporaryEntry(tempCleared.id, "CREDIT", "পণ্য", bdt(400), 0L, "")
+        repo.addTemporaryEntry(tempCleared.id, "PAYMENT", "জমা", bdt(400), bdt(400), "")
+
+        val tempDebtor = (repo.createTemporaryCustomer("অস্থায়ী বাকি", "হাট") as OperationResult.Success).data
+        repo.addTemporaryEntry(tempDebtor.id, "CREDIT", "পণ্য", bdt(600), 0L, "")
+        repo.addTemporaryEntry(tempDebtor.id, "PAYMENT", "জমা", bdt(350), bdt(350), "")
+
+        val closeRes = repo.closeHalKhataPeriod(
+            newPeriodName = "নতুন খাতা ২",
+            archivePdfPath = "/tmp/hk_fresh_1.pdf",
+            archiveBackupPath = "/tmp/hk_fresh_1.zip",
+            backupVerified = true
+        )
+        assertTrue(closeRes is OperationResult.Success)
+        val p2 = (closeRes as OperationResult.Success).data
+
+        // Customer A starts active ledger completely blank at 0
+        val custAAfter = db.customerDao().getById(custA.id)!!
+        assertEquals(0L, custAAfter.currentBalancePaisa)
+        assertEquals(0L, custAAfter.totalPurchasesPaisa)
+        assertEquals(0L, custAAfter.totalPaymentsPaisa)
+        assertEquals(0L, custAAfter.totalCreditPaisa)
+        assertEquals(p2.id, custAAfter.halKhataPeriodId)
+        assertTrue(repo.observeCustomerLedger(custA.id).first().isEmpty())
+        // Yet Period 1 history is still accessible
+        assertEquals(2, repo.observeCustomerLedger(custA.id, periodId = 1L).first().size)
+
+        // Customer B carries 300 BDT as line 1 in active ledger + still has Period 1 history
+        val custBLedgerActive = repo.observeCustomerLedger(custB.id).first()
+        assertEquals(1, custBLedgerActive.size)
+        val carryEntry = custBLedgerActive.first() as com.example.domain.CustomerLedgerEntry.QuickCreditEntry
+        assertEquals(CreditSourceType.OPENING_CARRYOVER, carryEntry.credit.sourceType)
+        assertEquals(bdt(300), carryEntry.runningBalancePaisa)
+        assertEquals(2, repo.observeCustomerLedger(custB.id, periodId = 1L).first().size)
+
+        // Settled temp customer removed; debtor temp carries 250 BDT cleanly
+        assertNull(db.temporaryCustomerDao().getById(tempCleared.id))
+        val keptTemp = db.temporaryCustomerDao().getById(tempDebtor.id)!!
+        assertEquals(bdt(250), keptTemp.outstandingPaisa)
+        assertEquals(1, db.temporaryCustomerDao().getMemosByTempCustomerOnce(tempDebtor.id).size)
+    }
+
+    @Test
+    fun testHalKhataKeepsLatestTwoClosedPeriodsAndDeletesOlderEverywhere() = runBlocking {
+        val cust = (repo.createCustomer("আলমগীর", "যশোর", openingBalancePaisa = bdt(1000)) as OperationResult.Success).data
+
+        // Period 1: pay 200 (cash +200), add expense 50 (cash -50) -> net cash 150, debt 800
+        repo.recordQuickPayment(cust.id, bdt(200), requestToken = "p1-pay")
+        repo.addExpense("চা-নাস্তা", bdt(50), "দোকান খরচ", paidFromCashbox = true, requestToken = "p1-exp")
+        val p1Pdf = File(context.cacheDir, "p1_archive_test.pdf").apply { writeText("pdf1") }
+        val p1ZipRes = backupManager.createZipBackup("HAL_KHATA_ARCHIVE", "p1_archive_test.zip") as OperationResult.Success
+        val p1Zip = File(p1ZipRes.data.filePath)
+        assertTrue(p1Pdf.exists() && p1Zip.exists())
+
+        val close1 = repo.closeHalKhataPeriod(
+            newPeriodName = "খাতা ২",
+            archivePdfPath = p1Pdf.absolutePath,
+            archiveBackupPath = p1Zip.absolutePath,
+            backupVerified = true
+        ) as OperationResult.Success
+        val p2 = close1.data
+
+        // Period 2: pay 300 -> net cumulative cash 450, debt 500
+        repo.recordQuickPayment(cust.id, bdt(300), requestToken = "p2-pay")
+        val p2Pdf = File(context.cacheDir, "p2_archive_test.pdf").apply { writeText("pdf2") }
+        val p2ZipRes = backupManager.createZipBackup("HAL_KHATA_ARCHIVE", "p2_archive_test.zip") as OperationResult.Success
+        val close2 = repo.closeHalKhataPeriod(
+            newPeriodName = "খাতা ৩",
+            archivePdfPath = p2Pdf.absolutePath,
+            archiveBackupPath = p2ZipRes.data.filePath,
+            backupVerified = true
+        ) as OperationResult.Success
+        val p3 = close2.data
+
+        // Period 3: pay 100 -> net cumulative cash 550, debt 400. Closing Period 3 creates Period 4 and MUST delete Period 1 everywhere!
+        repo.recordQuickPayment(cust.id, bdt(100), requestToken = "p3-pay")
+        val p3Pdf = File(context.cacheDir, "p3_archive_test.pdf").apply { writeText("pdf3") }
+        val p3ZipRes = backupManager.createZipBackup("HAL_KHATA_ARCHIVE", "p3_archive_test.zip") as OperationResult.Success
+        val close3 = repo.closeHalKhataPeriod(
+            newPeriodName = "খাতা ৪",
+            archivePdfPath = p3Pdf.absolutePath,
+            archiveBackupPath = p3ZipRes.data.filePath,
+            backupVerified = true
+        ) as OperationResult.Success
+        val p4 = close3.data
+
+        val remainingPeriods = db.halKhataDao().getAllPeriodsOnce()
+        // Strictly 3 periods remain: p2 (CLOSED), p3 (CLOSED), p4 (ACTIVE)
+        assertEquals(3, remainingPeriods.size)
+        assertNull(db.halKhataDao().getPeriodById(1L))
+        assertEquals(HalKhataStatus.CLOSED, db.halKhataDao().getPeriodById(p2.id)!!.status)
+        assertEquals(HalKhataStatus.CLOSED, db.halKhataDao().getPeriodById(p3.id)!!.status)
+        assertEquals(HalKhataStatus.ACTIVE, db.halKhataDao().getPeriodById(p4.id)!!.status)
+
+        // Period 1 transactions, balance snapshots, backup metadata, and archive files are ALL deleted
+        assertTrue(db.halKhataDao().observeBalancesByPeriod(1L).first().isEmpty())
+        assertTrue(db.paymentDao().getAllOnce().none { it.halKhataPeriodId == 1L })
+        assertTrue(db.creditTransactionDao().getAllOnce().none { it.halKhataPeriodId == 1L })
+        assertTrue(db.expenseDao().getAllOnce().none { it.halKhataPeriodId == 1L })
+        assertTrue(db.cashboxDao().getAllOnce().none { it.halKhataPeriodId == 1L })
+        assertTrue(db.backupMetadataDao().getAllOnce().none { it.filePath == p1Zip.absolutePath })
+        assertFalse(p1Pdf.exists())
+        assertFalse(p1Zip.exists())
+
+        // Kept 2 old periods (p2 & p3) still have their snapshots, files, and ledger entries
+        assertTrue(p2Pdf.exists() && File(p2ZipRes.data.filePath).exists())
+        assertTrue(p3Pdf.exists() && File(p3ZipRes.data.filePath).exists())
+        assertEquals(1, db.halKhataDao().observeBalancesByPeriod(p2.id).first().size)
+        assertEquals(1, db.halKhataDao().observeBalancesByPeriod(p3.id).first().size)
+
+        // Customer debt (400 BDT) and total Cashbox balance (550 BDT) are 100% preserved
+        assertEquals(bdt(400), db.customerDao().getById(cust.id)!!.currentBalancePaisa)
+        val cashbox = repo.computeCashboxSummary(db.cashboxDao().getAllOnce(), AppSettingsEntity())
+        assertEquals(bdt(550), cashbox.expectedBalancePaisa)
+
+        // Cleanup test cache files
+        runCatching { p2Pdf.delete(); File(p2ZipRes.data.filePath).delete(); p3Pdf.delete(); File(p3ZipRes.data.filePath).delete() }
+        Unit
+    }
+
+    @Test
+    fun testJsonBackupAndSettingsCashboxRestore() = runBlocking {
+        val cust = (repo.createCustomer("মামুন", "ফেনী", openingBalancePaisa = bdt(600)) as OperationResult.Success).data
+        repo.recordQuickPayment(cust.id, bdt(250), requestToken = "json-pay-1")
+        repo.recordActualCashCount(bdt(250))
+
+        val jsonRes = backupManager.createJsonBackupFile() as OperationResult.Success
+        val jsonFile = File(jsonRes.data.filePath)
+        assertTrue(jsonFile.exists())
+        val jsonBytes = jsonFile.readBytes()
+
+        val preview = backupManager.previewBackupBytes(jsonBytes, "msf:99999")
+        assertTrue(preview is OperationResult.Success)
+        assertTrue((preview as OperationResult.Success).data.checksumValid)
+
+        // Wipe database
+        db.paymentDao().deleteAll()
+        db.creditTransactionDao().deleteAll()
+        db.cashboxDao().deleteAll()
+        db.customerDao().deleteAll()
+        repo.updateSettings { it.copy(lastActualCashCountPaisa = null, lastActualCashCountAt = null) }
+
+        val restored = backupManager.restoreFromBytes(jsonBytes, "msf:99999")
+        assertTrue(restored is OperationResult.Success)
+        assertEquals(bdt(350), db.customerDao().getById(cust.id)!!.currentBalancePaisa)
+        assertEquals(bdt(250), db.appSettingsDao().getSettings()!!.lastActualCashCountPaisa)
+        runCatching { jsonFile.delete() }
+        Unit
+    }
+
+    @Test
+    fun testTwoYearPurgeDeletesOldDetailsAndPreservesExactBalances() = runBlocking {
+        val now = 2_000_000_000_000L
+        val oldTs = now - (800L * 24L * 60L * 60L * 1000L) // > 2 years ago
+        val recentTs = now - (10L * 24L * 60L * 60L * 1000L) // 10 days ago
+
+        val cust = (repo.createCustomer("করিম পুরোনো", "ঢাকা", openingBalancePaisa = 0L, createdAt = oldTs) as OperationResult.Success).data
+        // > 2 year records: +1000 credit, -400 payment -> net 600; +100 expense (cash -100, +400 = net cash 300)
+        repo.recordQuickCredit(cust.id, bdt(1000), "পুরোনো বাকি", requestToken = "old-crd-1", timestamp = oldTs)
+        repo.recordQuickPayment(cust.id, bdt(400), "পুরোনো জমা", requestToken = "old-pay-1", timestamp = oldTs)
+        repo.addExpense("বিদ্যুৎ বিল", bdt(100), "পুরোনো বিল", paidFromCashbox = true, requestToken = "old-exp-1", timestamp = oldTs)
+
+        // Recent records: +200 credit -> net debt should be 800, cashbox should remain 300
+        repo.recordQuickCredit(cust.id, bdt(200), "নতুন বাকি", requestToken = "new-crd-1", timestamp = recentTs)
+
+        val purgeRes = repo.purgeRecordsOlderThanTwoYears(nowMillis = now)
+        assertTrue(purgeRes is OperationResult.Success)
+        assertTrue((purgeRes as OperationResult.Success).data > 0)
+
+        // Detailed old records are purged (< cutoff), replaced only by compact carryover at cutoff where needed
+        val creditsAfter = db.creditTransactionDao().getAllOnce()
+        assertTrue(creditsAfter.none { it.requestToken == "old-crd-1" })
+        assertTrue(creditsAfter.any { it.requestToken == "new-crd-1" })
+
+        val paymentsAfter = db.paymentDao().getAllOnce()
+        assertTrue(paymentsAfter.none { it.requestToken == "old-pay-1" })
+        assertTrue(db.expenseDao().getAllOnce().none { it.requestToken == "old-exp-1" })
+
+        // Customer current balance (800 BDT) and Ledger running balance and Cashbox balance (300 BDT) stay 100% exact
+        assertEquals(bdt(800), db.customerDao().getById(cust.id)!!.currentBalancePaisa)
+        val ledgerEntries = repo.observeCustomerLedger(cust.id).first()
+        assertEquals(bdt(800), ledgerEntries.first().runningBalancePaisa)
+        val cashbox = repo.computeCashboxSummary(db.cashboxDao().getAllOnce(), AppSettingsEntity())
+        assertEquals(bdt(300), cashbox.expectedBalancePaisa)
+    }
+
+    @Test
+    fun testCompactBackupCodeRoundTripAndNullableJsonFields() = runBlocking {
+        val cust = (repo.createCustomer("সালমান", "সিলেট", openingBalancePaisa = bdt(1200)) as OperationResult.Success).data
+        repo.recordQuickPayment(cust.id, bdt(450), "জমা", requestToken = "code-pay-1")
+        // Also add a walk-in cash memo (customerId == null -> explicit JSON null!)
+        val walkInItem = MemoLineDraft("1", "মোট হিসাব", "1", "পিস", "300", 1000L, bdt(300), bdt(300))
+        repo.createSalesMemo(SaleType.CASH, null, "নগদ ক্রেতা", "", listOf(walkInItem), 0L, bdt(300), "", "code-walkin-1")
+
+        val codeRes = backupManager.createCompactBackupCode()
+        assertTrue(codeRes is OperationResult.Success)
+        val code = (codeRes as OperationResult.Success).data
+        assertTrue(code.startsWith("BK1:"))
+
+        val previewRes = backupManager.previewCompactBackupCode(code)
+        assertTrue(previewRes is OperationResult.Success)
+        val preview = (previewRes as OperationResult.Success).data
+        assertTrue(preview.checksumValid)
+        assertEquals(bdt(750), preview.totalOutstandingDebtPaisa)
+
+        // Wipe everything completely
+        db.auditLogDao().deleteAll()
+        db.expenseDao().deleteAll()
+        db.cashboxDao().deleteAll()
+        db.paymentDao().deleteAll()
+        db.creditTransactionDao().deleteAll()
+        db.memoDao().deleteAllMemos()
+        db.customerDao().deleteAll()
+
+        val restoreRes = backupManager.restoreFromCompactCode(code)
+        assertTrue(restoreRes is OperationResult.Success)
+        assertEquals(1, db.customerDao().getAllOnce().size)
+        assertEquals(bdt(750), db.customerDao().getById(cust.id)!!.currentBalancePaisa)
+        val restoredWalkInMemo = db.memoDao().getAllMemosOnce().first { it.requestToken == "code-walkin-1" }
+        assertNull(restoredWalkInMemo.customerId)
+        assertEquals(bdt(300), restoredWalkInMemo.grandTotalPaisa)
+    }
 }

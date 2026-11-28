@@ -267,7 +267,7 @@ fun CustomerPickerDialog(
     title: String = "কাস্টমার নির্বাচন করুন",
     onDismiss: () -> Unit,
     onSelect: (CustomerEntity) -> Unit,
-    onRequestCreateCustomer: () -> Unit
+    onRequestCreateCustomer: (() -> Unit)? = null
 ) {
     var query by remember { mutableStateOf("") }
     val filtered = remember(customers, query) {
@@ -308,19 +308,21 @@ fun CustomerPickerDialog(
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
-                    placeholder = { Text("নাম, আইডি, মোবাইল, গ্রাম বা ডাকনাম খুঁজুন") },
+                    placeholder = { Text("নাম, মোবাইল, গ্রাম বা ডাকনাম খুঁজুন") },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("picker_search_input")
                 )
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(
-                    onClick = onRequestCreateCustomer,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("picker_add_customer_button")
-                ) {
-                    Icon(Icons.Default.PersonAdd, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("নতুন কাস্টমার যোগ করে এখানে ফিরুন")
+                if (onRequestCreateCustomer != null) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = onRequestCreateCustomer,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("picker_add_customer_button")
+                    ) {
+                        Icon(Icons.Default.PersonAdd, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("নতুন কাস্টমার যোগ করে এখানে ফিরুন")
+                    }
                 }
                 Spacer(Modifier.height(10.dp))
                 LazyColumn(
@@ -348,11 +350,17 @@ fun CustomerPickerDialog(
                                         style = MaterialTheme.typography.titleSmall,
                                         fontWeight = FontWeight.Bold
                                     )
-                                    Text(
-                                        text = "${c.customerCode} • ${c.address}${if (c.mobile.isNotBlank()) " • ${c.mobile}" else ""}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                                    val detailLine = listOfNotNull(
+                                        c.address.takeIf { it.isNotBlank() },
+                                        c.mobile.takeIf { it.isNotBlank() }
+                                    ).joinToString(" • ")
+                                    if (detailLine.isNotBlank()) {
+                                        Text(
+                                            text = detailLine,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
                                 }
                                 Column(horizontalAlignment = Alignment.End) {
                                     Text(
@@ -502,7 +510,13 @@ fun PdfPreviewAndActionsDialog(
                 ) {
                     if (isPdf) {
                         Button(
-                            onClick = { pdfGenerator.printPdfFile(context, file, title) },
+                            onClick = {
+                                try {
+                                    pdfGenerator.printPdfFile(context, file, title)
+                                } catch (e: Exception) {
+                                    onMessage("প্রিন্ট করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                                }
+                            },
                             modifier = Modifier.weight(1f).heightIn(min = 48.dp)
                         ) {
                             Icon(Icons.Default.Print, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -511,7 +525,13 @@ fun PdfPreviewAndActionsDialog(
                         }
                     }
                     OutlinedButton(
-                        onClick = { createDocLauncher.launch(file.name) },
+                        onClick = {
+                            try {
+                                createDocLauncher.launch(file.name)
+                            } catch (e: Exception) {
+                                onMessage("ফাইল সেভ খোলা যায়নি: ${e.message ?: "ত্রুটি"}")
+                            }
+                        },
                         modifier = Modifier.weight(1f).heightIn(min = 48.dp)
                     ) {
                         Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -519,7 +539,13 @@ fun PdfPreviewAndActionsDialog(
                         Text("সংরক্ষণ")
                     }
                     OutlinedButton(
-                        onClick = { pdfGenerator.shareFile(context, file, mimeType, title) },
+                        onClick = {
+                            try {
+                                pdfGenerator.shareFile(context, file, mimeType, title)
+                            } catch (e: Exception) {
+                                onMessage("শেয়ার করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                            }
+                        },
                         modifier = Modifier.weight(1f).heightIn(min = 48.dp)
                     ) {
                         Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))

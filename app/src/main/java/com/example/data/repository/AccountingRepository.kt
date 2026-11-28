@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.util.UUID
 
 class AccountingRepository(private val db: BakirKhataDatabase) {
@@ -43,13 +44,24 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
     fun observeTempMemos(tempCustomerId: Long): Flow<List<TemporaryMemoEntity>> =
         tempDao.observeMemosByTempCustomer(tempCustomerId)
 
-    fun observeCustomerLedger(customerId: Long): Flow<List<CustomerLedgerEntry>> {
+    fun observeCustomerLedger(customerId: Long, periodId: Long? = null): Flow<List<CustomerLedgerEntry>> {
         return combine(
             memoDao.observeByCustomerWithItems(customerId),
             creditDao.observeByCustomer(customerId),
-            paymentDao.observeByCustomer(customerId)
-        ) { memos, credits, payments ->
-            buildCustomerLedgerEntries(memos, credits, payments)
+            paymentDao.observeByCustomer(customerId),
+            activeHalKhataFlow
+        ) { memos, credits, payments, activePeriod ->
+            val targetPeriodId = periodId ?: activePeriod?.id
+            val filteredMemos = if (targetPeriodId != null) {
+                memos.filter { it.memo.halKhataPeriodId == targetPeriodId }
+            } else memos
+            val filteredCredits = if (targetPeriodId != null) {
+                credits.filter { it.halKhataPeriodId == targetPeriodId }
+            } else credits
+            val filteredPayments = if (targetPeriodId != null) {
+                payments.filter { it.halKhataPeriodId == targetPeriodId }
+            } else payments
+            buildCustomerLedgerEntries(filteredMemos, filteredCredits, filteredPayments)
         }
     }
 
@@ -180,7 +192,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
                 )
                 inserted
             }
-            OperationResult.Success(saved, "নতুন কাস্টমার '${saved.name}' (${saved.customerCode}) যুক্ত হয়েছে")
+            OperationResult.Success(saved, "নতুন কাস্টমার '${saved.name}' যুক্ত হয়েছে")
         } catch (e: Exception) {
             OperationResult.Error("কাস্টমার যোগ করা যায়নি: ${e.message ?: "ত্রুটি"}")
         }
@@ -309,7 +321,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
                         amountPaisa = amountPaisa,
                         sourceType = "PAYMENT",
                         sourceId = paymentId,
-                        description = "কাস্টমার জমা: ${customer.name} ($receiptNumber)",
+                        description = "কাস্টমার জমা: ${customer.name}",
                         notes = notes.trim(),
                         halKhataPeriodId = periodId,
                         createdAt = timestamp
@@ -536,7 +548,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
                             amountPaisa = paidPaisa,
                             sourceType = "MEMO",
                             sourceId = memoId,
-                            description = "নগদ বিক্রয় মেমো: ${memo.customerNameSnapshot} ($memoNumber)",
+                            description = "নগদ বিক্রয়: ${memo.customerNameSnapshot}",
                             notes = notes.trim(),
                             halKhataPeriodId = periodId,
                             createdAt = timestamp
@@ -557,7 +569,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
                                 amountPaisa = outstandingPaisa,
                                 previousBalancePaisa = prevBal,
                                 newBalancePaisa = prevBal + outstandingPaisa,
-                                description = "বিক্রয় মেমো বকেয়া ($memoNumber)",
+                                description = "বিক্রয় বকেয়া",
                                 notes = notes.trim(),
                                 sourceType = CreditSourceType.MEMO,
                                 memoId = memoId,
@@ -594,7 +606,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
 
                 MemoWithItems(memo.copy(id = memoId), itemEntities)
             }
-            OperationResult.Success(saved, "মেমো ${saved.memo.memoNumber} সফলভাবে সংরক্ষিত হয়েছে")
+            OperationResult.Success(saved, "বিক্রয় হিসাব সফলভাবে সংরক্ষিত হয়েছে")
         } catch (e: Exception) {
             OperationResult.Error(e.message ?: "মেমো সংরক্ষণ করা যায়নি")
         }
@@ -631,7 +643,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
                             amountPaisa = cbx.amountPaisa,
                             sourceType = "PAYMENT_REVERSAL",
                             sourceId = paymentId,
-                            description = "জমা বাতিল সমন্বয় (${payment.receiptNumber})",
+                            description = "জমা বাতিল সমন্বয়",
                             notes = cleanReason,
                             halKhataPeriodId = payment.halKhataPeriodId
                         )
@@ -712,7 +724,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
                         amountPaisa = newAmountPaisa,
                         sourceType = "PAYMENT",
                         sourceId = newId,
-                        description = "সংশোধিত জমা: ${customer.name} ($newReceipt)",
+                        description = "সংশোধিত জমা: ${customer.name}",
                         notes = cleanReason,
                         halKhataPeriodId = old.halKhataPeriodId,
                         createdAt = old.createdAt
@@ -860,7 +872,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
                                 amountPaisa = newPaid,
                                 sourceType = "MEMO",
                                 sourceId = memoId,
-                                description = "সংশোধিত বিক্রয় মেমো (${memo.memoNumber})",
+                                description = "সংশোধিত বিক্রয় হিসাব",
                                 notes = cleanReason,
                                 halKhataPeriodId = memo.halKhataPeriodId,
                                 createdAt = memo.createdAt
@@ -881,7 +893,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
                                 amountPaisa = newOutstanding,
                                 previousBalancePaisa = cust.currentBalancePaisa,
                                 newBalancePaisa = cust.currentBalancePaisa + newOutstanding,
-                                description = "সংশোধিত মেমো বকেয়া (${memo.memoNumber})",
+                                description = "সংশোধিত বিক্রয় বকেয়া",
                                 notes = cleanReason,
                                 sourceType = CreditSourceType.MEMO,
                                 memoId = memoId,
@@ -1245,7 +1257,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
                             amountPaisa = actualCashIn,
                             sourceType = "TEMP_MEMO",
                             sourceId = memoId,
-                            description = "অস্থায়ী খাতা ($memoNo): ${tempCust.name}",
+                            description = "অস্থায়ী খাতা: ${tempCust.name}",
                             notes = notes.trim(),
                             halKhataPeriodId = getActivePeriodIdLocked(),
                             createdAt = timestamp
@@ -1320,7 +1332,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
                                     amountPaisa = tm.paidPaisa,
                                     previousBalancePaisa = prev,
                                     newBalancePaisa = runningBal,
-                                    notes = "অস্থায়ী খাতা থেকে রূপান্তরিত (${tm.memoNumber}): ${tm.notes}".trim(),
+                                    notes = if (tm.notes.isNotBlank()) "অস্থায়ী খাতা: ${tm.notes}" else "অস্থায়ী খাতা থেকে রূপান্তরিত",
                                     halKhataPeriodId = periodId,
                                     createdAt = tm.createdAt
                                 )
@@ -1339,7 +1351,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
                                     previousBalancePaisa = prev,
                                     newBalancePaisa = runningBal,
                                     description = tm.description,
-                                    notes = "অস্থায়ী খাতা থেকে রূপান্তরিত (${tm.memoNumber})",
+                                    notes = "অস্থায়ী খাতা থেকে রূপান্তরিত",
                                     sourceType = CreditSourceType.QUICK_CREDIT,
                                     halKhataPeriodId = periodId,
                                     createdAt = tm.createdAt
@@ -1367,7 +1379,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
                                     grandTotalPaisa = tm.totalAmountPaisa,
                                     paidPaisa = tm.paidPaisa,
                                     outstandingPaisa = tm.creditPaisa,
-                                    notes = "অস্থায়ী মেমো ${tm.memoNumber}: ${tm.notes}".trim(),
+                                    notes = if (tm.notes.isNotBlank()) "অস্থায়ী হিসাব: ${tm.notes}" else "অস্থায়ী হিসাব",
                                     halKhataPeriodId = periodId,
                                     createdAt = tm.createdAt,
                                     updatedAt = tm.createdAt
@@ -1397,7 +1409,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
                                         amountPaisa = tm.creditPaisa,
                                         previousBalancePaisa = prev,
                                         newBalancePaisa = runningBal,
-                                        description = "রূপান্তরিত মেমো ($newMemoNo)",
+                                        description = "বিক্রয় বকেয়া",
                                         notes = tm.notes,
                                         sourceType = CreditSourceType.MEMO,
                                         memoId = memoId,
@@ -1436,7 +1448,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
 
                 customerDao.getById(permanentId)!!
             }
-            OperationResult.Success(permanent, "'${permanent.name}' স্থায়ী কাস্টমার হিসেবে (${permanent.customerCode}) রূপান্তরিত হয়েছে")
+            OperationResult.Success(permanent, "'${permanent.name}' স্থায়ী কাস্টমার হিসেবে যুক্ত হয়েছে")
         } catch (e: Exception) {
             OperationResult.Error(e.message ?: "রূপান্তর ব্যর্থ হয়েছে")
         }
@@ -1556,13 +1568,20 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
                 )
                 val newPeriodId = halKhataDao.insertPeriod(createdPeriod)
 
-                // Carry forward unpaid balances cleanly to new period while preserving customer identity
+                // Carry forward unpaid balances cleanly to new period while starting zero-balance customers fresh
                 for (c in allCustomers) {
                     val carryBalance = c.currentBalancePaisa
                     customerDao.update(
                         c.copy(
                             openingBalancePaisa = carryBalance,
-                            halKhataPeriodId = newPeriodId
+                            halKhataPeriodId = newPeriodId,
+                            currentBalancePaisa = carryBalance,
+                            totalPurchasesPaisa = 0L,
+                            totalCreditPaisa = carryBalance,
+                            totalPaymentsPaisa = 0L,
+                            oldestUnpaidTimestamp = if (carryBalance > 0L) (c.oldestUnpaidTimestamp ?: now) else null,
+                            lastTransactionDate = if (carryBalance > 0L) now else null,
+                            lastPaymentDate = if (carryBalance > 0L) c.lastPaymentDate else null
                         )
                     )
                     if (carryBalance > 0L) {
@@ -1585,27 +1604,93 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
                     }
                 }
 
+                // Temporary customers: remove fully settled or already-converted temp accounts; carry forward remaining unpaid debt cleanly
+                val allTemps = tempDao.getAllOnce()
+                for (temp in allTemps) {
+                    if (temp.isConverted || temp.outstandingPaisa <= 0L) {
+                        tempDao.deleteCustomerById(temp.id)
+                    } else {
+                        tempDao.deleteMemosByTempCustomer(temp.id)
+                        val tmNum = tempDao.getMaxMemoId() + 1L
+                        tempDao.insertMemo(
+                            TemporaryMemoEntity(
+                                tempCustomerId = temp.id,
+                                memoNumber = "TMEM-${tmNum.toString().padStart(5, '0')}",
+                                type = "CREDIT",
+                                description = "পূর্ববর্তী হালখাতা (${active.name}) থেকে জের",
+                                totalAmountPaisa = temp.outstandingPaisa,
+                                paidPaisa = 0L,
+                                creditPaisa = temp.outstandingPaisa,
+                                notes = "স্বয়ংক্রিয় হালখাতা জের স্থানান্তর",
+                                createdAt = now
+                            )
+                        )
+                        tempDao.updateCustomer(
+                            temp.copy(
+                                totalCreditPaisa = temp.outstandingPaisa,
+                                totalPaidPaisa = 0L,
+                                outstandingPaisa = temp.outstandingPaisa,
+                                updatedAt = now
+                            )
+                        )
+                    }
+                }
+
                 // Update settings active period
                 val settings = settingsDao.getSettings() ?: AppSettingsEntity()
                 settingsDao.upsert(settings.copy(activeHalKhataPeriodId = newPeriodId, updatedAt = now))
 
-                // Enforce retention policy: keep active + latest 2 completed periods in active detailed history.
-                // Archive older detailed transactions ONLY if their backupVerified == true.
+                // Strict retention policy: keep active + latest 2 completed periods; completely delete 3rd+ old periods everywhere.
                 val completedPeriods = halKhataDao.getAllPeriodsOnce()
-                    .filter { it.status == HalKhataStatus.CLOSED }
+                    .filter { it.status != HalKhataStatus.ACTIVE }
                     .sortedByDescending { it.closedAt ?: it.id }
 
                 if (completedPeriods.size > 2) {
-                    val toArchive = completedPeriods.drop(2)
-                    for (oldPeriod in toArchive) {
-                        if (oldPeriod.backupVerified && oldPeriod.archiveBackupPath.isNotBlank()) {
-                            memoDao.deleteMemosByPeriod(oldPeriod.id)
-                            paymentDao.deleteByPeriod(oldPeriod.id)
-                            creditDao.deleteByPeriod(oldPeriod.id)
-                            expenseDao.deleteByPeriod(oldPeriod.id)
-                            cashboxDao.deleteByPeriod(oldPeriod.id)
-                            halKhataDao.updatePeriod(oldPeriod.copy(status = HalKhataStatus.ARCHIVED))
+                    val toDelete = completedPeriods.drop(2)
+                    for (oldPeriod in toDelete) {
+                        // Preserve net cashbox balance of purged period so Cashbox never drifts
+                        val oldCashbox = cashboxDao.getAllOnce().filter {
+                            it.halKhataPeriodId == oldPeriod.id && !it.isReversed
                         }
+                        val netOldCashbox = oldCashbox.filter { it.direction == CashboxDirection.IN }.sumOf { it.amountPaisa } -
+                            oldCashbox.filter { it.direction == CashboxDirection.OUT }.sumOf { it.amountPaisa }
+                        if (netOldCashbox != 0L) {
+                            val cbxNum = cashboxDao.getMaxId() + 1L
+                            cashboxDao.insert(
+                                CashboxTransactionEntity(
+                                    transactionCode = "CBX-${cbxNum.toString().padStart(5, '0')}",
+                                    requestToken = "CBX-CARRY-${oldPeriod.id}-TO-$newPeriodId",
+                                    type = if (netOldCashbox > 0L) CashboxType.OPENING else CashboxType.CORRECTION,
+                                    direction = if (netOldCashbox > 0L) CashboxDirection.IN else CashboxDirection.OUT,
+                                    amountPaisa = if (netOldCashbox > 0L) netOldCashbox else -netOldCashbox,
+                                    sourceType = "HAL_KHATA_CASHBOX_CARRYOVER",
+                                    sourceId = oldPeriod.id,
+                                    description = "পূর্ববর্তী ক্যাশবক্স জের (${oldPeriod.name})",
+                                    notes = "স্বয়ংক্রিয় ক্যাশবক্স ব্যালেন্স সংরক্ষণ",
+                                    halKhataPeriodId = newPeriodId,
+                                    createdAt = (oldPeriod.startDate - 1L).coerceAtLeast(0L)
+                                )
+                            )
+                        }
+
+                        memoDao.deleteMemosByPeriod(oldPeriod.id)
+                        paymentDao.deleteByPeriod(oldPeriod.id)
+                        creditDao.deleteByPeriod(oldPeriod.id)
+                        expenseDao.deleteByPeriod(oldPeriod.id)
+                        cashboxDao.deleteByPeriod(oldPeriod.id)
+                        halKhataDao.deleteBalancesByPeriod(oldPeriod.id)
+                        halKhataDao.deletePeriodById(oldPeriod.id)
+
+                        if (oldPeriod.archiveBackupPath.isNotBlank()) {
+                            backupDao.deleteByFilePath(oldPeriod.archiveBackupPath)
+                            runCatching { File(oldPeriod.archiveBackupPath).delete() }
+                        }
+                        if (oldPeriod.archivePdfPath.isNotBlank()) {
+                            runCatching { File(oldPeriod.archivePdfPath).delete() }
+                        }
+
+                        val purgeClosedAt = oldPeriod.closedAt ?: oldPeriod.endDate ?: now
+                        auditDao.deleteLogsForPurgedPeriod(oldPeriod.id, purgeClosedAt)
                     }
                 }
 
@@ -1627,6 +1712,202 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
             OperationResult.Success(newPeriod, "হালখাতা সফলভাবে সমাপ্ত হয়েছে এবং নতুন হিসাব কাল '${newPeriod.name}' শুরু হয়েছে")
         } catch (e: Exception) {
             OperationResult.Error(e.message ?: "হালখাতা সমাপ্ত করা যায়নি")
+        }
+    }
+
+    /**
+     * Automatically removes detailed transaction records older than 2 years (730 days)
+     * while preserving exact active customer balances, unpaid temporary balances, and cashbox balance
+     * via compact carryover entries at the 2-year cutoff timestamp.
+     */
+    suspend fun purgeRecordsOlderThanTwoYears(
+        nowMillis: Long = System.currentTimeMillis()
+    ): OperationResult<Int> {
+        val twoYearsMillis = 730L * 24L * 60L * 60L * 1000L
+        val cutoff = (nowMillis - twoYearsMillis).coerceAtLeast(1L)
+
+        return try {
+            val purgedCount = db.withTransaction {
+                val activePeriodId = getActivePeriodIdLocked()
+
+                // 1. Identify old inactive Hal Khata periods whose end/close date is strictly older than 2 years
+                val oldInactivePeriods = halKhataDao.getAllPeriodsOnce().filter { period ->
+                    period.status != HalKhataStatus.ACTIVE &&
+                        period.id != activePeriodId &&
+                        (period.closedAt ?: period.endDate ?: period.createdAt) < cutoff
+                }
+                val oldPeriodIds = oldInactivePeriods.map { it.id }.toSet()
+
+                // 2. Compute exact cashbox net delta of all non-reversed entries being removed (< cutoff or inside purged periods)
+                val allCashbox = cashboxDao.getAllOnce()
+                val cashboxToPurge = allCashbox.filter { !it.isReversed && (it.createdAt < cutoff || it.halKhataPeriodId in oldPeriodIds) }
+                val netPurgedCash = cashboxToPurge.filter { it.direction == CashboxDirection.IN }.sumOf { it.amountPaisa } -
+                    cashboxToPurge.filter { it.direction == CashboxDirection.OUT }.sumOf { it.amountPaisa }
+
+                // 3. Snapshot active-period net purged debt per customer BEFORE deleting rows < cutoff
+                val oldActiveCredits = creditDao.getAllOnce().filter {
+                    it.halKhataPeriodId == activePeriodId && it.createdAt < cutoff
+                }
+                val oldActivePayments = paymentDao.getAllOnce().filter {
+                    it.halKhataPeriodId == activePeriodId && it.createdAt < cutoff
+                }
+                val affectedCustomerIds = (oldActiveCredits.map { it.customerId } + oldActivePayments.map { it.customerId }).toSet()
+                val customerNetDebtCarryover = HashMap<Long, Long>(affectedCustomerIds.size)
+                for (cid in affectedCustomerIds) {
+                    val cSum = oldActiveCredits.filter { it.customerId == cid && !it.isReversed }.sumOf { it.amountPaisa }
+                    val pSum = oldActivePayments.filter { it.customerId == cid && !it.isReversed }.sumOf { it.amountPaisa }
+                    customerNetDebtCarryover[cid] = cSum - pSum
+                }
+
+                // 4. Snapshot non-converted temp customers' old net balances before purging memos < cutoff
+                val tempCustomers = tempDao.getAllOnce()
+                val allTempMemos = tempDao.getAllMemosOnce()
+                val tempCarryovers = mutableListOf<Pair<TemporaryCustomerEntity, Long>>()
+                for (tc in tempCustomers) {
+                    if (!tc.isConverted) {
+                        val oldMemos = allTempMemos.filter { it.tempCustomerId == tc.id && it.createdAt < cutoff }
+                        if (oldMemos.isNotEmpty()) {
+                            val oldNet = oldMemos.sumOf { it.creditPaisa } -
+                                oldMemos.filter { it.type == "PAYMENT" }.sumOf { it.paidPaisa }
+                            if (oldNet != 0L) {
+                                tempCarryovers.add(tc to oldNet)
+                            }
+                        }
+                    }
+                }
+
+                // 5. Remove expired local backup files & metadata < cutoff
+                val oldBackups = backupDao.getAllOnce().filter { it.createdAt < cutoff }
+                for (b in oldBackups) {
+                    if (b.filePath.isNotBlank()) {
+                        runCatching { File(b.filePath).delete() }
+                    }
+                }
+                var deletedCount = backupDao.deleteBefore(cutoff)
+
+                // 6. Delete closed inactive Hal Khata periods older than 2 years
+                for (oldPeriod in oldInactivePeriods) {
+                    memoDao.deleteMemosByPeriod(oldPeriod.id)
+                    paymentDao.deleteByPeriod(oldPeriod.id)
+                    creditDao.deleteByPeriod(oldPeriod.id)
+                    expenseDao.deleteByPeriod(oldPeriod.id)
+                    cashboxDao.deleteByPeriod(oldPeriod.id)
+                    halKhataDao.deleteBalancesByPeriod(oldPeriod.id)
+                    halKhataDao.deletePeriodById(oldPeriod.id)
+                    if (oldPeriod.archiveBackupPath.isNotBlank()) {
+                        backupDao.deleteByFilePath(oldPeriod.archiveBackupPath)
+                        runCatching { File(oldPeriod.archiveBackupPath).delete() }
+                    }
+                    if (oldPeriod.archivePdfPath.isNotBlank()) {
+                        runCatching { File(oldPeriod.archivePdfPath).delete() }
+                    }
+                    deletedCount++
+                }
+
+                // 7. Delete detailed transaction records strictly older than 2 years
+                deletedCount += auditDao.deleteBefore(cutoff)
+                deletedCount += expenseDao.deleteBefore(cutoff)
+                deletedCount += cashboxDao.deleteBefore(cutoff)
+                deletedCount += paymentDao.deleteBefore(cutoff)
+                deletedCount += creditDao.deleteBefore(cutoff)
+                deletedCount += memoDao.deleteMemosBefore(cutoff)
+                deletedCount += tempDao.deleteMemosBefore(cutoff)
+                deletedCount += tempDao.deleteConvertedBefore(cutoff)
+
+                // 8. Re-insert compact balance-preserving carryover entries at createdAt = cutoff
+                if (netPurgedCash != 0L) {
+                    val cbxNum = cashboxDao.getMaxId() + 1L
+                    cashboxDao.insert(
+                        CashboxTransactionEntity(
+                            transactionCode = "CBX-${cbxNum.toString().padStart(5, '0')}",
+                            requestToken = "CBX-PURGE-2Y-$cutoff",
+                            type = if (netPurgedCash > 0L) CashboxType.OPENING else CashboxType.CORRECTION,
+                            direction = if (netPurgedCash > 0L) CashboxDirection.IN else CashboxDirection.OUT,
+                            amountPaisa = if (netPurgedCash > 0L) netPurgedCash else -netPurgedCash,
+                            sourceType = "TWO_YEAR_PURGE_CARRYOVER",
+                            sourceId = null,
+                            description = "২ বছরের আগের হিসাবের জের",
+                            notes = "স্বয়ংক্রিয় ২ বছরের পুরনো তথ্য পরিষ্কারের জের",
+                            halKhataPeriodId = activePeriodId,
+                            createdAt = cutoff
+                        )
+                    )
+                }
+
+                for ((cid, netDebt) in customerNetDebtCarryover) {
+                    if (netDebt > 0L) {
+                        val crNum = creditDao.getMaxId() + 1L
+                        creditDao.insert(
+                            CreditTransactionEntity(
+                                transactionCode = "CRD-${crNum.toString().padStart(5, '0')}",
+                                requestToken = "CRD-PURGE-2Y-$cid-$cutoff",
+                                customerId = cid,
+                                amountPaisa = netDebt,
+                                previousBalancePaisa = 0L,
+                                newBalancePaisa = netDebt,
+                                description = "২ বছরের আগের হিসাবের জের",
+                                notes = "স্বয়ংক্রিয় পুরনো হিসাব জের",
+                                sourceType = CreditSourceType.OPENING_CARRYOVER,
+                                halKhataPeriodId = activePeriodId,
+                                createdAt = cutoff
+                            )
+                        )
+                    } else if (netDebt < 0L) {
+                        val payNum = paymentDao.getMaxId() + 1L
+                        paymentDao.insert(
+                            PaymentEntity(
+                                receiptNumber = "PAY-${payNum.toString().padStart(5, '0')}",
+                                requestToken = "PAY-PURGE-2Y-$cid-$cutoff",
+                                customerId = cid,
+                                amountPaisa = -netDebt,
+                                previousBalancePaisa = 0L,
+                                newBalancePaisa = 0L,
+                                notes = "২ বছরের আগের অতিরিক্ত জমার জের",
+                                halKhataPeriodId = activePeriodId,
+                                createdAt = cutoff
+                            )
+                        )
+                    }
+                    recalculateCustomerLocked(cid)
+                }
+
+                for ((tc, oldNet) in tempCarryovers) {
+                    val tmNum = tempDao.getMaxMemoId() + 1L
+                    tempDao.insertMemo(
+                        TemporaryMemoEntity(
+                            tempCustomerId = tc.id,
+                            memoNumber = "TMEMO-${tmNum.toString().padStart(5, '0')}",
+                            type = if (oldNet > 0L) "CREDIT" else "PAYMENT",
+                            description = "২ বছরের আগের হিসাবের জের",
+                            totalAmountPaisa = if (oldNet > 0L) oldNet else -oldNet,
+                            paidPaisa = if (oldNet < 0L) -oldNet else 0L,
+                            creditPaisa = if (oldNet > 0L) oldNet else 0L,
+                            notes = "স্বয়ংক্রিয় পুরনো হিসাব জের",
+                            createdAt = cutoff
+                        )
+                    )
+                }
+
+                if (deletedCount > 0) {
+                    auditDao.insert(
+                        AuditLogEntity(
+                            transactionRef = "PURGE-2Y-$nowMillis",
+                            entityType = "SYSTEM",
+                            entityId = 0L,
+                            actionType = "AUTO_PURGE_2Y",
+                            previousValueJson = JSONObject().put("cutoffMillis", cutoff).toString(),
+                            newValueJson = JSONObject().put("deletedCount", deletedCount).toString(),
+                            reason = "২ বছরের বেশি পুরনো লেনদেন স্বয়ংক্রিয়ভাবে পরিষ্কার",
+                            createdAt = nowMillis
+                        )
+                    )
+                }
+
+                deletedCount
+            }
+            OperationResult.Success(purgedCount, "২ বছরের পুরনো তথ্য পরিষ্কার সম্পন্ন হয়েছে")
+        } catch (e: Exception) {
+            OperationResult.Error("পুরনো তথ্য পরিষ্কার ব্যর্থ: ${e.message}")
         }
     }
 
@@ -1842,7 +2123,11 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
             !it.isReversed && it.createdAt in dayStart..dayEnd && it.sourceType != CreditSourceType.OPENING_CARRYOVER
         }
         val todayExpenses = expenses.filter { !it.isCancelled && it.createdAt in dayStart..dayEnd }
-        val todayCashbox = cashbox.filter { !it.isReversed && it.createdAt in dayStart..dayEnd }
+        val todayCashbox = cashbox.filter {
+            !it.isReversed && it.createdAt in dayStart..dayEnd &&
+                it.sourceType != "HAL_KHATA_CASHBOX_CARRYOVER" &&
+                it.sourceType != "TWO_YEAR_PURGE_CARRYOVER"
+        }
 
         val todayTotalSales = todayMemos.sumOf { it.memo.grandTotalPaisa }
         val todayCashSales = todayMemos.sumOf { it.memo.paidPaisa }
@@ -1868,8 +2153,8 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
         memos.firstOrNull { !it.memo.isCancelled }?.let {
             candidates.add(
                 LastTransactionInfo(
-                    title = "মেমো: ${it.memo.customerNameSnapshot}",
-                    subtitle = it.memo.memoNumber,
+                    title = "বিক্রি: ${it.memo.customerNameSnapshot}",
+                    subtitle = CurrencyUtils.formatDateTimeBn(it.memo.createdAt),
                     amountPaisa = it.memo.grandTotalPaisa,
                     timestamp = it.memo.createdAt
                 )
@@ -1880,7 +2165,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
             candidates.add(
                 LastTransactionInfo(
                     title = "জমা: $custName",
-                    subtitle = p.receiptNumber,
+                    subtitle = CurrencyUtils.formatDateTimeBn(p.createdAt),
                     amountPaisa = p.amountPaisa,
                     timestamp = p.createdAt
                 )
@@ -1890,8 +2175,8 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
             val custName = customers.find { it.id == c.customerId }?.name ?: "কাস্টমার"
             candidates.add(
                 LastTransactionInfo(
-                    title = "দ্রুত বাকি: $custName",
-                    subtitle = c.transactionCode,
+                    title = "বাকি: $custName",
+                    subtitle = CurrencyUtils.formatDateTimeBn(c.createdAt),
                     amountPaisa = c.amountPaisa,
                     timestamp = c.createdAt
                 )
@@ -1901,7 +2186,7 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
             candidates.add(
                 LastTransactionInfo(
                     title = "খরচ: ${e.category}",
-                    subtitle = e.expenseCode,
+                    subtitle = CurrencyUtils.formatDateTimeBn(e.createdAt),
                     amountPaisa = e.amountPaisa,
                     timestamp = e.createdAt
                 )
@@ -2106,13 +2391,19 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
         val cashSales = dayMemos.sumOf { it.memo.paidPaisa }
         val creditSales = dayMemos.sumOf { it.memo.outstandingPaisa }
         val customerPayments = dayPayments.sumOf { it.amountPaisa }
-        val otherIncome = dayCashbox.filter { it.type == CashboxType.OTHER_INCOME }.sumOf { it.amountPaisa }
+        val otherIncome = dayCashbox.filter {
+            it.type == CashboxType.OTHER_INCOME &&
+                it.sourceType != "HAL_KHATA_CASHBOX_CARRYOVER" &&
+                it.sourceType != "TWO_YEAR_PURGE_CARRYOVER"
+        }.sumOf { it.amountPaisa }
         val totalInflow = cashSales + customerPayments + otherIncome
 
         val cashExpenses = dayCashbox.filter { it.type == CashboxType.EXPENSE }.sumOf { it.amountPaisa }
         val supplierPayments = dayCashbox.filter { it.type == CashboxType.SUPPLIER_PAYMENT }.sumOf { it.amountPaisa }
         val otherOutflows = dayCashbox.filter {
-            it.type == CashboxType.OTHER_WITHDRAWAL || it.type == CashboxType.CORRECTION
+            (it.type == CashboxType.OTHER_WITHDRAWAL || it.type == CashboxType.CORRECTION) &&
+                it.sourceType != "HAL_KHATA_CASHBOX_CARRYOVER" &&
+                it.sourceType != "TWO_YEAR_PURGE_CARRYOVER"
         }.sumOf { it.amountPaisa }
         val totalOutflow = cashExpenses + supplierPayments + otherOutflows
 
@@ -2170,7 +2461,11 @@ class AccountingRepository(private val db: BakirKhataDatabase) {
             !it.isReversed && it.createdAt in rangeStart..rangeEnd && it.sourceType != CreditSourceType.OPENING_CARRYOVER
         }
         val rangeExpenses = expenses.filter { !it.isCancelled && it.createdAt in rangeStart..rangeEnd }
-        val rangeCashbox = cashbox.filter { !it.isReversed && it.createdAt in rangeStart..rangeEnd }
+        val rangeCashbox = cashbox.filter {
+            !it.isReversed && it.createdAt in rangeStart..rangeEnd &&
+                it.sourceType != "HAL_KHATA_CASHBOX_CARRYOVER" &&
+                it.sourceType != "TWO_YEAR_PURGE_CARRYOVER"
+        }
 
         val customerRows = customers.map { c ->
             val cm = rangeMemos.filter { it.memo.customerId == c.id }

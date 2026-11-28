@@ -84,7 +84,7 @@ fun CustomersScreen(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = { Text("নাম, আইডি, মোবাইল, ঠিকানা বা ডাকনাম খুঁজুন") },
+                placeholder = { Text("নাম, মোবাইল, ঠিকানা বা ডাকনাম খুঁজুন") },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 trailingIcon = {
                     if (searchQuery.isNotEmpty()) {
@@ -184,23 +184,11 @@ private fun CustomerCardRow(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(
-                        text = customer.name,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Surface(
-                        shape = MaterialTheme.shapes.small,
-                        color = MaterialTheme.colorScheme.surfaceVariant
-                    ) {
-                        Text(
-                            text = customer.customerCode,
-                            style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                }
+                Text(
+                    text = customer.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
                 if (customer.nickname.isNotBlank()) {
                     Text(
                         text = "ডাকনাম: ${customer.nickname}",
@@ -255,7 +243,7 @@ fun EditCustomerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("কাস্টমার সম্পাদনা (${customer.customerCode})") },
+        title = { Text("কাস্টমার সম্পাদনা") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("নাম *") }, singleLine = true)

@@ -141,6 +141,20 @@ class PdfGenerator(private val context: Context) {
             y += 10f
         }
 
+        fun measureTextHeight(text: String, paint: TextPaint, width: Float): Float {
+            val safeText = text.ifEmpty { " " }
+            return try {
+                val layout = StaticLayout.Builder.obtain(safeText, 0, safeText.length, paint, width.toInt().coerceAtLeast(20))
+                    .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                    .setLineSpacing(2f, 1f)
+                    .setIncludePad(false)
+                    .build()
+                layout.height.toFloat()
+            } catch (_: Throwable) {
+                paint.textSize + 4f
+            }
+        }
+
         fun ensureSpace(neededHeight: Float, docTitle: String) {
             if (y + neededHeight > pageHeight - 48f) {
                 startNewPage(docTitle)
@@ -149,8 +163,9 @@ class PdfGenerator(private val context: Context) {
 
         fun drawWrappedText(text: String, paint: TextPaint, width: Float, xOffset: Float = 0f, advanceY: Boolean = true): Float {
             recordedLines.add(text)
+            val safeText = text.ifEmpty { " " }
             val c = canvas ?: return if (advanceY) { y += 14f; 14f } else 14f
-            val layout = StaticLayout.Builder.obtain(text, 0, text.length, paint, width.toInt().coerceAtLeast(20))
+            val layout = StaticLayout.Builder.obtain(safeText, 0, safeText.length, paint, width.toInt().coerceAtLeast(20))
                 .setAlignment(Layout.Alignment.ALIGN_NORMAL)
                 .setLineSpacing(2f, 1f)
                 .setIncludePad(false)
@@ -167,17 +182,16 @@ class PdfGenerator(private val context: Context) {
         }
 
         fun drawKeyValueRow(label: String, value: String, docTitle: String, boldValue: Boolean = false) {
-            ensureSpace(18f, docTitle)
             val leftW = contentWidth * 0.55f
             val rightW = contentWidth * 0.43f
+            val valuePaint = if (boldValue) boldBodyPaint else bodyPaint
+            val neededH = maxOf(
+                measureTextHeight(label, bodyPaint, leftW),
+                measureTextHeight(value, valuePaint, rightW)
+            ) + 6f
+            ensureSpace(neededH, docTitle)
             val h1 = drawWrappedText(label, bodyPaint, leftW, 0f, advanceY = false)
-            val h2 = drawWrappedText(
-                value,
-                if (boldValue) boldBodyPaint else bodyPaint,
-                rightW,
-                contentWidth * 0.57f,
-                advanceY = false
-            )
+            val h2 = drawWrappedText(value, valuePaint, rightW, contentWidth * 0.57f, advanceY = false)
             y += maxOf(h1, h2) + 4f
         }
 
@@ -246,17 +260,15 @@ class PdfGenerator(private val context: Context) {
         payment: PaymentEntity,
         settings: AppSettingsEntity
     ): File {
-        val file = File(getOutputDir(), "receipt_${payment.receiptNumber}.pdf")
+        val file = File(getOutputDir(), "receipt_${payment.id}_${payment.createdAt}.pdf")
         val w = PdfCanvasWriter(settings)
-        val docTitle = "পেমেন্ট রসিদ (${payment.receiptNumber})"
+        val docTitle = "জমা রসিদ"
         w.startNewPage(docTitle)
 
-        w.drawKeyValueRow("রসিদ নম্বর:", payment.receiptNumber, docTitle, boldValue = true)
         w.drawKeyValueRow("তারিখ ও সময়:", "${CurrencyUtils.formatDateBn(payment.createdAt)} (${CurrencyUtils.weekdayBn(payment.createdAt)}), ${CurrencyUtils.formatTimeBn(payment.createdAt)}", docTitle)
         w.drawDivider()
         w.drawKeyValueRow("কাস্টমারের নাম:", customer.name, docTitle, boldValue = true)
-        w.drawKeyValueRow("কাস্টমার আইডি:", customer.customerCode, docTitle)
-        w.drawKeyValueRow("ঠিকানা:", customer.address, docTitle)
+        if (customer.address.isNotBlank()) w.drawKeyValueRow("ঠিকানা:", customer.address, docTitle)
         if (customer.mobile.isNotBlank()) w.drawKeyValueRow("মোবাইল:", customer.mobile, docTitle)
         w.drawDivider()
         w.drawKeyValueRow("পূর্বের বকেয়া:", CurrencyUtils.formatBdt(payment.previousBalancePaisa, settings.currencySymbol), docTitle)
@@ -268,7 +280,7 @@ class PdfGenerator(private val context: Context) {
         }
         if (payment.isReversed) {
             w.y += 6f
-            w.drawWrappedText("সতর্কতা: এই রসিদটি পরবর্তীতে বাতিল (রিভার্স) করা হয়েছে।", w.sectionPaint, contentWidth)
+            w.drawWrappedText("সতর্কতা: এই জমা হিসাবটি পরবর্তীতে বাতিল করা হয়েছে।", w.sectionPaint, contentWidth)
         }
 
         return w.saveToFile(file)
@@ -279,51 +291,63 @@ class PdfGenerator(private val context: Context) {
         settings: AppSettingsEntity
     ): File {
         val memo = memoWithItems.memo
-        val file = File(getOutputDir(), "memo_${memo.memoNumber}.pdf")
+        val file = File(getOutputDir(), "memo_${memo.id}_${memo.createdAt}.pdf")
         val w = PdfCanvasWriter(settings)
-        val docTitle = "বিক্রয় মেমো (${memo.memoNumber})"
+        val docTitle = "বিক্রয় ও বাকি হিসাব"
         w.startNewPage(docTitle)
 
         val saleLabel = when (memo.saleType) {
-            SaleType.CASH -> "নগদ বিক্রি"
-            SaleType.CREDIT -> "বাকি বিক্রি"
-            else -> "আংশিক জমা বিক্রি"
+            SaleType.CASH -> "নগদ"
+            SaleType.CREDIT -> "বাকি"
+            else -> "আংশিক জমা"
         }
-        w.drawKeyValueRow("মেমো নম্বর:", memo.memoNumber, docTitle, boldValue = true)
-        w.drawKeyValueRow("ধরন:", saleLabel, docTitle, boldValue = true)
         w.drawKeyValueRow("তারিখ ও সময়:", "${CurrencyUtils.formatDateBn(memo.createdAt)} (${CurrencyUtils.weekdayBn(memo.createdAt)}), ${CurrencyUtils.formatTimeBn(memo.createdAt)}", docTitle)
+        w.drawKeyValueRow("ধরন:", saleLabel, docTitle, boldValue = true)
         w.drawKeyValueRow("ক্রেতা:", memo.customerNameSnapshot, docTitle, boldValue = true)
         if (memo.customerAddressSnapshot.isNotBlank()) {
             w.drawKeyValueRow("ঠিকানা:", memo.customerAddressSnapshot, docTitle)
         }
         w.drawDivider()
 
-        // Item table header
-        w.ensureSpace(24f, docTitle)
-        w.canvas?.drawRect(margin, w.y - 2f, pageWidth - margin, w.y + 18f, w.headerBgPaint)
-        w.drawWrappedText("পণ্যের বিবরণ", w.boldBodyPaint, contentWidth * 0.42f, 4f, advanceY = false)
-        w.drawWrappedText("পরিমাণ", w.boldBodyPaint, contentWidth * 0.18f, contentWidth * 0.43f, advanceY = false)
-        w.drawWrappedText("দর", w.boldBodyPaint, contentWidth * 0.18f, contentWidth * 0.62f, advanceY = false)
-        w.drawWrappedText("মোট", w.boldBodyPaint, contentWidth * 0.18f, contentWidth * 0.81f, advanceY = false)
-        w.y += 22f
+        val isSimpleAmountMemo = memoWithItems.items.isEmpty() ||
+            (memoWithItems.items.size == 1 && memoWithItems.items.first().productName == "মোট হিসাব")
 
-        for (item in memoWithItems.items) {
-            w.ensureSpace(22f, docTitle)
-            val h1 = w.drawWrappedText(item.productName, w.bodyPaint, contentWidth * 0.42f, 4f, advanceY = false)
-            val h2 = w.drawWrappedText("${CurrencyUtils.formatQuantityBn(item.quantityMillis)} ${item.unit}", w.bodyPaint, contentWidth * 0.18f, contentWidth * 0.43f, advanceY = false)
-            val h3 = w.drawWrappedText(CurrencyUtils.formatBdt(item.unitPricePaisa, settings.currencySymbol), w.bodyPaint, contentWidth * 0.18f, contentWidth * 0.62f, advanceY = false)
-            val h4 = w.drawWrappedText(CurrencyUtils.formatBdt(item.lineTotalPaisa, settings.currencySymbol), w.boldBodyPaint, contentWidth * 0.18f, contentWidth * 0.81f, advanceY = false)
-            w.y += maxOf(h1, h2, h3, h4) + 5f
+        if (!isSimpleAmountMemo) {
+            w.ensureSpace(24f, docTitle)
+            w.canvas?.drawRect(margin, w.y - 2f, pageWidth - margin, w.y + 18f, w.headerBgPaint)
+            w.drawWrappedText("বিবরণ", w.boldBodyPaint, contentWidth * 0.42f, 4f, advanceY = false)
+            w.drawWrappedText("পরিমাণ", w.boldBodyPaint, contentWidth * 0.18f, contentWidth * 0.43f, advanceY = false)
+            w.drawWrappedText("দর", w.boldBodyPaint, contentWidth * 0.18f, contentWidth * 0.62f, advanceY = false)
+            w.drawWrappedText("মোট", w.boldBodyPaint, contentWidth * 0.18f, contentWidth * 0.81f, advanceY = false)
+            w.y += 22f
+
+            for (item in memoWithItems.items) {
+                val qtyStr = "${CurrencyUtils.formatQuantityBn(item.quantityMillis)} ${item.unit}"
+                val rateStr = CurrencyUtils.formatBdt(item.unitPricePaisa, settings.currencySymbol)
+                val totalStr = CurrencyUtils.formatBdt(item.lineTotalPaisa, settings.currencySymbol)
+                val rowH = maxOf(
+                    w.measureTextHeight(item.productName, w.bodyPaint, contentWidth * 0.42f),
+                    w.measureTextHeight(qtyStr, w.bodyPaint, contentWidth * 0.18f),
+                    w.measureTextHeight(rateStr, w.bodyPaint, contentWidth * 0.18f),
+                    w.measureTextHeight(totalStr, w.boldBodyPaint, contentWidth * 0.18f)
+                ) + 6f
+                w.ensureSpace(rowH, docTitle)
+                val h1 = w.drawWrappedText(item.productName, w.bodyPaint, contentWidth * 0.42f, 4f, advanceY = false)
+                val h2 = w.drawWrappedText(qtyStr, w.bodyPaint, contentWidth * 0.18f, contentWidth * 0.43f, advanceY = false)
+                val h3 = w.drawWrappedText(rateStr, w.bodyPaint, contentWidth * 0.18f, contentWidth * 0.62f, advanceY = false)
+                val h4 = w.drawWrappedText(totalStr, w.boldBodyPaint, contentWidth * 0.18f, contentWidth * 0.81f, advanceY = false)
+                w.y += maxOf(h1, h2, h3, h4) + 5f
+            }
+            w.drawDivider()
         }
 
-        w.drawDivider()
-        w.drawKeyValueRow("মোট (সাবটোটাল):", CurrencyUtils.formatBdt(memo.subtotalPaisa, settings.currencySymbol), docTitle)
         if (memo.discountPaisa > 0L) {
+            w.drawKeyValueRow("মোট হিসাব:", CurrencyUtils.formatBdt(memo.subtotalPaisa, settings.currencySymbol), docTitle)
             w.drawKeyValueRow("ছাড়:", CurrencyUtils.formatBdt(memo.discountPaisa, settings.currencySymbol), docTitle)
         }
-        w.drawKeyValueRow("সর্বমোট বিল:", CurrencyUtils.formatBdt(memo.grandTotalPaisa, settings.currencySymbol), docTitle, boldValue = true)
+        w.drawKeyValueRow("মোট বিল:", CurrencyUtils.formatBdt(memo.grandTotalPaisa, settings.currencySymbol), docTitle, boldValue = true)
         w.drawKeyValueRow("নগদ জমা:", CurrencyUtils.formatBdt(memo.paidPaisa, settings.currencySymbol), docTitle)
-        w.drawKeyValueRow("বকেয়া:", CurrencyUtils.formatBdt(memo.outstandingPaisa, settings.currencySymbol), docTitle, boldValue = true)
+        w.drawKeyValueRow("বাকি:", CurrencyUtils.formatBdt(memo.outstandingPaisa, settings.currencySymbol), docTitle, boldValue = true)
         if (memo.notes.isNotBlank()) {
             w.drawDivider()
             w.drawWrappedText("নোট: ${memo.notes}", w.bodyPaint, contentWidth)
@@ -333,36 +357,44 @@ class PdfGenerator(private val context: Context) {
     }
 
     /**
-     * Generates a strictly isolated PDF for a single customer.
+     * Generates a strictly isolated, simple date-wise PDF for a single customer.
      */
     fun generateCustomerLedgerPdf(
         customer: CustomerEntity,
         entries: List<CustomerLedgerEntry>,
         settings: AppSettingsEntity,
         periodLabel: String = "সম্পূর্ণ হিসাব কাল",
-        targetFile: File? = null
+        targetFile: File? = null,
+        summaryOpeningPaisa: Long? = null,
+        summaryCreditPaisa: Long? = null,
+        summaryPaidPaisa: Long? = null,
+        summaryBalancePaisa: Long? = null
     ): File {
-        val safeName = customer.customerCode.replace(Regex("[^A-Za-z0-9_-]"), "_")
-        val file = targetFile ?: File(getOutputDir(), "ledger_${safeName}.pdf")
+        val safeName = customer.name.replace(Regex("[^\\p{L}0-9_-]"), "_").ifBlank { "customer_${customer.id}" }
+        val file = targetFile ?: File(getOutputDir(), "ledger_${customer.id}_$safeName.pdf")
         val w = PdfCanvasWriter(settings)
-        val docTitle = "কাস্টমার লেজার: ${customer.name} (${customer.customerCode})"
+        val docTitle = "কাস্টমার খাতা: ${customer.name}"
         w.startNewPage(docTitle)
 
+        val openBal = summaryOpeningPaisa ?: customer.openingBalancePaisa
+        val totalCr = summaryCreditPaisa ?: customer.totalCreditPaisa
+        val totalPd = summaryPaidPaisa ?: customer.totalPaymentsPaisa
+        val netBal = summaryBalancePaisa ?: customer.currentBalancePaisa
+
         w.drawKeyValueRow("কাস্টমারের নাম:", customer.name, docTitle, boldValue = true)
-        w.drawKeyValueRow("কাস্টমার আইডি:", customer.customerCode, docTitle, boldValue = true)
-        w.drawKeyValueRow("ঠিকানা / গ্রাম:", customer.address, docTitle)
+        if (customer.address.isNotBlank()) w.drawKeyValueRow("ঠিকানা / গ্রাম:", customer.address, docTitle)
         if (customer.mobile.isNotBlank()) w.drawKeyValueRow("মোবাইল:", customer.mobile, docTitle)
-        if (customer.nickname.isNotBlank()) w.drawKeyValueRow("ডাকনাম:", customer.nickname, docTitle)
-        w.drawKeyValueRow("রিপোর্ট সময়কাল:", periodLabel, docTitle)
+        w.drawKeyValueRow("সময়কাল:", periodLabel, docTitle)
         w.drawDivider()
-        w.drawKeyValueRow("প্রারম্ভিক বাকি:", CurrencyUtils.formatBdt(customer.openingBalancePaisa, settings.currencySymbol), docTitle)
-        w.drawKeyValueRow("মোট ক্রয়:", CurrencyUtils.formatBdt(customer.totalPurchasesPaisa, settings.currencySymbol), docTitle)
-        w.drawKeyValueRow("মোট বাকি:", CurrencyUtils.formatBdt(customer.totalCreditPaisa, settings.currencySymbol), docTitle)
-        w.drawKeyValueRow("মোট জমা:", CurrencyUtils.formatBdt(customer.totalPaymentsPaisa, settings.currencySymbol), docTitle)
-        w.drawKeyValueRow("বর্তমান নিট বকেয়া:", CurrencyUtils.formatBdt(customer.currentBalancePaisa, settings.currencySymbol), docTitle, boldValue = true)
+        if (openBal > 0L) {
+            w.drawKeyValueRow("পূর্বের জের:", CurrencyUtils.formatBdt(openBal, settings.currencySymbol), docTitle)
+        }
+        w.drawKeyValueRow("মোট বাকি:", CurrencyUtils.formatBdt(totalCr, settings.currencySymbol), docTitle)
+        w.drawKeyValueRow("মোট জমা:", CurrencyUtils.formatBdt(totalPd, settings.currencySymbol), docTitle)
+        w.drawKeyValueRow("বর্তমান মোট বাকি:", CurrencyUtils.formatBdt(netBal, settings.currencySymbol), docTitle, boldValue = true)
         w.drawDivider()
 
-        w.drawWrappedText("লেনদেনের বিবরণ (তারিখ অনুযায়ী)", w.sectionPaint, contentWidth)
+        w.drawWrappedText("তারিখ অনুযায়ী বাকি ও জমার হিসাব", w.sectionPaint, contentWidth)
         w.y += 4f
 
         val chronological = entries.sortedBy { it.timestamp }
@@ -370,48 +402,53 @@ class PdfGenerator(private val context: Context) {
             w.drawWrappedText("কোনো লেনদেন পাওয়া যায়নি।", w.mutedPaint, contentWidth)
         } else {
             for (entry in chronological) {
-                w.ensureSpace(44f, docTitle)
-                val dateHeader = "${CurrencyUtils.formatDateBn(entry.timestamp)} (${CurrencyUtils.weekdayBn(entry.timestamp)}) ${CurrencyUtils.formatTimeBn(entry.timestamp)} | ${entry.referenceCode}"
-                w.drawWrappedText(dateHeader, w.mutedPaint, contentWidth)
+                val dateHeader = "${CurrencyUtils.formatDateBn(entry.timestamp)} (${CurrencyUtils.weekdayBn(entry.timestamp)})"
+                val leftText: String
+                val rightText = "বাকি জের: ${CurrencyUtils.formatBdt(entry.runningBalancePaisa, settings.currencySymbol)}"
+                var boldRight = false
+
                 when (entry) {
                     is CustomerLedgerEntry.MemoEntry -> {
                         val m = entry.memoWithItems.memo
                         val statusTag = if (m.isCancelled) " [বাতিল]" else ""
-                        w.drawKeyValueRow(
-                            "বিক্রয় মেমো (${m.saleType})$statusTag — মোট: ${CurrencyUtils.formatBdt(m.grandTotalPaisa, settings.currencySymbol)}, জমা: ${CurrencyUtils.formatBdt(m.paidPaisa, settings.currencySymbol)}, বাকি: ${CurrencyUtils.formatBdt(m.outstandingPaisa, settings.currencySymbol)}",
-                            "জের: ${CurrencyUtils.formatBdt(entry.runningBalancePaisa, settings.currencySymbol)}",
-                            docTitle
-                        )
-                        for (item in entry.memoWithItems.items) {
-                            w.ensureSpace(16f, docTitle)
-                            w.drawWrappedText(
-                                "  • ${item.productName}: ${CurrencyUtils.formatQuantityBn(item.quantityMillis)} ${item.unit} × ${CurrencyUtils.formatBdt(item.unitPricePaisa, settings.currencySymbol)} = ${CurrencyUtils.formatBdt(item.lineTotalPaisa, settings.currencySymbol)}",
-                                w.bodyPaint,
-                                contentWidth - 10f,
-                                8f
-                            )
+                        val noteSuffix = if (m.notes.isNotBlank()) " — ${m.notes}" else ""
+                        leftText = when {
+                            m.outstandingPaisa > 0L && m.paidPaisa > 0L ->
+                                "বাকি: +${CurrencyUtils.formatBdt(m.outstandingPaisa, settings.currencySymbol)}, নগদ জমা: ${CurrencyUtils.formatBdt(m.paidPaisa, settings.currencySymbol)}$statusTag$noteSuffix"
+                            m.outstandingPaisa > 0L ->
+                                "বাকি: +${CurrencyUtils.formatBdt(m.outstandingPaisa, settings.currencySymbol)}$statusTag$noteSuffix"
+                            else ->
+                                "নগদ বিল: ${CurrencyUtils.formatBdt(m.grandTotalPaisa, settings.currencySymbol)}$statusTag$noteSuffix"
                         }
                     }
                     is CustomerLedgerEntry.QuickCreditEntry -> {
                         val c = entry.credit
-                        val statusTag = if (c.isReversed) " [রিভার্স]" else ""
-                        w.drawKeyValueRow(
-                            "বাকি (${c.description})$statusTag: +${CurrencyUtils.formatBdt(c.amountPaisa, settings.currencySymbol)}",
-                            "জের: ${CurrencyUtils.formatBdt(entry.runningBalancePaisa, settings.currencySymbol)}",
-                            docTitle
-                        )
+                        val statusTag = if (c.isReversed) " [বাতিল]" else ""
+                        val kindLabel = if (c.sourceType == CreditSourceType.OPENING_CARRYOVER) "পূর্বের জের" else "বাকি"
+                        val notePart = c.notes.ifBlank {
+                            if (c.description.isNotBlank() && c.description != "দ্রুত বাকি" && c.description != "পূর্বের / প্রারম্ভিক বাকি") c.description else ""
+                        }
+                        val noteSuffix = if (notePart.isNotBlank()) " — $notePart" else ""
+                        leftText = "$kindLabel: +${CurrencyUtils.formatBdt(c.amountPaisa, settings.currencySymbol)}$statusTag$noteSuffix"
                     }
                     is CustomerLedgerEntry.PaymentEntry -> {
                         val p = entry.payment
                         val statusTag = if (p.isReversed) " [বাতিল]" else ""
-                        w.drawKeyValueRow(
-                            "জমা গ্রহণ$statusTag: -${CurrencyUtils.formatBdt(p.amountPaisa, settings.currencySymbol)} ${p.notes}".trim(),
-                            "জের: ${CurrencyUtils.formatBdt(entry.runningBalancePaisa, settings.currencySymbol)}",
-                            docTitle,
-                            boldValue = true
-                        )
+                        val label = if (p.notes.contains("হালখাতা")) "হালখাতা জমা" else "জমা"
+                        val noteSuffix = if (p.notes.isNotBlank() && p.notes != "হালখাতা জমা") " — ${p.notes}" else ""
+                        leftText = "$label: -${CurrencyUtils.formatBdt(p.amountPaisa, settings.currencySymbol)}$statusTag$noteSuffix"
+                        boldRight = true
                     }
                 }
+
+                val neededH = w.measureTextHeight(dateHeader, w.mutedPaint, contentWidth) +
+                    maxOf(
+                        w.measureTextHeight(leftText, w.bodyPaint, contentWidth * 0.55f),
+                        w.measureTextHeight(rightText, if (boldRight) w.boldBodyPaint else w.bodyPaint, contentWidth * 0.43f)
+                    ) + 18f
+                w.ensureSpace(neededH, docTitle)
+                w.drawWrappedText(dateHeader, w.mutedPaint, contentWidth)
+                w.drawKeyValueRow(leftText, rightText, docTitle, boldValue = boldRight)
                 w.drawDivider()
             }
         }
@@ -431,8 +468,9 @@ class PdfGenerator(private val context: Context) {
         val zipFile = File(getOutputDir(), zipName)
         val tempPdfs = mutableListOf<File>()
         ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
-            for ((customer, entries) in customersWithLedgers) {
-                val safeFileName = "${customer.customerCode}_${customer.name.replace(Regex("[^\\p{L}0-9_-]"), "_")}.pdf"
+            for ((index, pair) in customersWithLedgers.withIndex()) {
+                val (customer, entries) = pair
+                val safeFileName = "${index + 1}_${customer.name.replace(Regex("[^\\p{L}0-9_-]"), "_")}.pdf"
                 val singlePdf = File(getOutputDir(), safeFileName)
                 generateCustomerLedgerPdf(customer, entries, settings, targetFile = singlePdf)
                 tempPdfs.add(singlePdf)
@@ -457,9 +495,8 @@ class PdfGenerator(private val context: Context) {
         w.drawDivider()
 
         for (c in customers) {
-            w.ensureSpace(26f, title)
             w.drawKeyValueRow(
-                "${c.name} (${c.customerCode}) — ${c.address}${if (c.mobile.isNotBlank()) " | ${c.mobile}" else ""}",
+                "${c.name}${if (c.address.isNotBlank()) " — ${c.address}" else ""}${if (c.mobile.isNotBlank()) " | ${c.mobile}" else ""}",
                 CurrencyUtils.formatBdt(c.currentBalancePaisa, settings.currencySymbol),
                 title,
                 boldValue = c.currentBalancePaisa > 0L
@@ -517,9 +554,8 @@ class PdfGenerator(private val context: Context) {
         w.drawWrappedText("কাস্টমার ভিত্তিক সারসংক্ষেপ", w.sectionPaint, contentWidth)
         w.y += 4f
         for (row in report.customerRows.filter { it.periodSalesPaisa > 0 || it.periodCreditAddedPaisa > 0 || it.periodPaymentsPaisa > 0 || it.customer.currentBalancePaisa > 0 }) {
-            w.ensureSpace(26f, docTitle)
             w.drawKeyValueRow(
-                "${row.customer.name} (${row.customer.customerCode}) — বিক্রি: ${CurrencyUtils.formatBdt(row.periodSalesPaisa, settings.currencySymbol)}, জমা: ${CurrencyUtils.formatBdt(row.periodPaymentsPaisa, settings.currencySymbol)}",
+                "${row.customer.name} — বিক্রি: ${CurrencyUtils.formatBdt(row.periodSalesPaisa, settings.currencySymbol)}, জমা: ${CurrencyUtils.formatBdt(row.periodPaymentsPaisa, settings.currencySymbol)}",
                 "বকেয়া: ${CurrencyUtils.formatBdt(row.customer.currentBalancePaisa, settings.currencySymbol)}",
                 docTitle
             )
@@ -542,7 +578,6 @@ class PdfGenerator(private val context: Context) {
         }
         w.drawDivider()
         for (tx in txs.filter { !it.isReversed }) {
-            w.ensureSpace(24f, docTitle)
             val sign = if (tx.direction == CashboxDirection.IN) "+" else "-"
             w.drawKeyValueRow(
                 "${CurrencyUtils.formatDateTimeBn(tx.createdAt)} | ${tx.description}",
@@ -562,7 +597,6 @@ class PdfGenerator(private val context: Context) {
         w.drawKeyValueRow("মোট খরচ:", CurrencyUtils.formatBdt(active.sumOf { it.amountPaisa }, settings.currencySymbol), docTitle, boldValue = true)
         w.drawDivider()
         for (e in active) {
-            w.ensureSpace(24f, docTitle)
             w.drawKeyValueRow(
                 "${CurrencyUtils.formatDateBn(e.createdAt)} | ${e.category} — ${e.description}",
                 CurrencyUtils.formatBdt(e.amountPaisa, settings.currencySymbol),
@@ -580,10 +614,9 @@ class PdfGenerator(private val context: Context) {
         w.drawKeyValueRow("মোট অস্থায়ী বকেয়া:", CurrencyUtils.formatBdt(tempCustomers.filter { !it.isConverted }.sumOf { it.outstandingPaisa }, settings.currencySymbol), docTitle, boldValue = true)
         w.drawDivider()
         for (t in tempCustomers) {
-            w.ensureSpace(24f, docTitle)
-            val tag = if (t.isConverted) " [স্থায়ী রূপান্তরিত]" else ""
+            val tag = if (t.isConverted) " [স্থায়ী]" else ""
             w.drawKeyValueRow(
-                "${t.name} (${t.tempCode}) — ${t.address}$tag",
+                "${t.name}${if (t.address.isNotBlank()) " — ${t.address}" else ""}$tag",
                 CurrencyUtils.formatBdt(t.outstandingPaisa, settings.currencySymbol),
                 docTitle
             )
@@ -614,19 +647,17 @@ class PdfGenerator(private val context: Context) {
 
         if (balances.isNotEmpty()) {
             for (b in balances) {
-                w.ensureSpace(24f, docTitle)
                 w.drawKeyValueRow(
-                    "${b.customerName} (${b.customerCode}) | প্রারম্ভিক: ${CurrencyUtils.formatBdt(b.openingBalancePaisa, settings.currencySymbol)}, জমা: ${CurrencyUtils.formatBdt(b.totalPaymentsPaisa, settings.currencySymbol)}",
-                    "সমাপনী: ${CurrencyUtils.formatBdt(b.closingBalancePaisa, settings.currencySymbol)}",
+                    "${b.customerName} | আগের: ${CurrencyUtils.formatBdt(b.openingBalancePaisa, settings.currencySymbol)}, জমা: ${CurrencyUtils.formatBdt(b.totalPaymentsPaisa, settings.currencySymbol)}",
+                    "বাকি: ${CurrencyUtils.formatBdt(b.closingBalancePaisa, settings.currencySymbol)}",
                     docTitle,
                     boldValue = b.closingBalancePaisa > 0L
                 )
             }
         } else {
             for (c in customers) {
-                w.ensureSpace(24f, docTitle)
                 w.drawKeyValueRow(
-                    "${c.name} (${c.customerCode})",
+                    c.name,
                     CurrencyUtils.formatBdt(c.currentBalancePaisa, settings.currencySymbol),
                     docTitle
                 )
@@ -647,22 +678,20 @@ class PdfGenerator(private val context: Context) {
         val docTitle = "সম্পূর্ণ দোকানের লেনদেন ইতিহাস"
         w.startNewPage(docTitle)
         w.drawKeyValueRow("মোট কাস্টমার:", CurrencyUtils.toBengaliDigits(customers.size.toString()), docTitle)
-        w.drawKeyValueRow("মোট মেমো:", CurrencyUtils.toBengaliDigits(memos.size.toString()), docTitle)
+        w.drawKeyValueRow("মোট বিক্রয় হিসাব:", CurrencyUtils.toBengaliDigits(memos.size.toString()), docTitle)
         w.drawKeyValueRow("মোট জমা:", CurrencyUtils.toBengaliDigits(payments.size.toString()), docTitle)
         w.drawKeyValueRow("মোট খরচ:", CurrencyUtils.toBengaliDigits(expenses.size.toString()), docTitle)
         w.drawKeyValueRow("মোট বকেয়া:", CurrencyUtils.formatBdt(customers.sumOf { it.currentBalancePaisa }, settings.currencySymbol), docTitle, boldValue = true)
         w.drawDivider()
-        w.drawWrappedText("সাম্প্রতিক মেমো সমূহ", w.sectionPaint, contentWidth)
+        w.drawWrappedText("সাম্প্রতিক বিক্রি ও বাকি", w.sectionPaint, contentWidth)
         for (m in memos) {
-            w.ensureSpace(20f, docTitle)
-            w.drawKeyValueRow("${CurrencyUtils.formatDateBn(m.memo.createdAt)} | ${m.memo.memoNumber} (${m.memo.customerNameSnapshot})", CurrencyUtils.formatBdt(m.memo.grandTotalPaisa, settings.currencySymbol), docTitle)
+            w.drawKeyValueRow("${CurrencyUtils.formatDateBn(m.memo.createdAt)} | ${m.memo.customerNameSnapshot}", CurrencyUtils.formatBdt(m.memo.grandTotalPaisa, settings.currencySymbol), docTitle)
         }
         w.drawDivider()
-        w.drawWrappedText("সাম্প্রতিক জমা সমূহ", w.sectionPaint, contentWidth)
+        w.drawWrappedText("সাম্প্রতিক জমা", w.sectionPaint, contentWidth)
         for (p in payments) {
-            w.ensureSpace(20f, docTitle)
             val cname = customers.find { it.id == p.customerId }?.name ?: "কাস্টমার"
-            w.drawKeyValueRow("${CurrencyUtils.formatDateBn(p.createdAt)} | ${p.receiptNumber} ($cname)", CurrencyUtils.formatBdt(p.amountPaisa, settings.currencySymbol), docTitle)
+            w.drawKeyValueRow("${CurrencyUtils.formatDateBn(p.createdAt)} | $cname", CurrencyUtils.formatBdt(p.amountPaisa, settings.currencySymbol), docTitle)
         }
         return w.saveToFile(file)
     }

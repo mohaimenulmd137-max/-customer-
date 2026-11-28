@@ -134,8 +134,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun observeCustomer(customerId: Long): Flow<CustomerEntity?> = repo.observeCustomer(customerId)
-    fun observeCustomerLedger(customerId: Long): Flow<List<CustomerLedgerEntry>> =
-        repo.observeCustomerLedger(customerId)
+    fun observeCustomerLedger(customerId: Long, periodId: Long? = null): Flow<List<CustomerLedgerEntry>> =
+        repo.observeCustomerLedger(customerId, periodId)
     fun observeHalKhataBalances(periodId: Long): Flow<List<HalKhataCustomerBalanceEntity>> =
         repo.observeHalKhataBalances(periodId)
     fun observeTempMemos(tempId: Long): Flow<List<TemporaryMemoEntity>> =
@@ -444,13 +444,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         notes: String,
         onSuccess: () -> Unit = {}
     ) {
+        if (_isSubmitting.value) return
         viewModelScope.launch {
-            when (val res = repo.addTemporaryEntry(tempCustomerId, type, description, totalAmountPaisa, paidPaisa, notes)) {
-                is OperationResult.Success -> {
-                    postMessage(res.messageBn)
-                    onSuccess()
+            _isSubmitting.value = true
+            try {
+                when (val res = repo.addTemporaryEntry(tempCustomerId, type, description, totalAmountPaisa, paidPaisa, notes)) {
+                    is OperationResult.Success -> {
+                        postMessage(res.messageBn)
+                        onSuccess()
+                    }
+                    is OperationResult.Error -> postMessage(res.messageBn)
                 }
-                is OperationResult.Error -> postMessage(res.messageBn)
+            } finally {
+                _isSubmitting.value = false
             }
         }
     }
@@ -566,20 +572,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    suspend fun generateSingleCustomerLedgerPdf(customer: CustomerEntity): File = withContext(Dispatchers.IO) {
-        val custMemos = memos.value.filter { it.memo.customerId == customer.id }
-        val custCredits = credits.value.filter { it.customerId == customer.id }
-        val custPayments = payments.value.filter { it.customerId == customer.id }
+    suspend fun generateSingleCustomerLedgerPdf(customer: CustomerEntity, periodId: Long? = null): File = withContext(Dispatchers.IO) {
+        val activePeriodId = activeHalKhata.value?.id
+        val targetPeriodId = periodId ?: activePeriodId
+        val isOldPeriod = activePeriodId != null && targetPeriodId != null && targetPeriodId != activePeriodId
+        val periodLabel = halKhataPeriods.value.find { it.id == targetPeriodId }?.name ?: "চলতি খাতা"
+
+        val custMemos = memos.value.filter {
+            it.memo.customerId == customer.id && (targetPeriodId == null || it.memo.halKhataPeriodId == targetPeriodId)
+        }
+        val custCredits = credits.value.filter {
+            it.customerId == customer.id && (targetPeriodId == null || it.halKhataPeriodId == targetPeriodId)
+        }
+        val custPayments = payments.value.filter {
+            it.customerId == customer.id && (targetPeriodId == null || it.halKhataPeriodId == targetPeriodId)
+        }
         val entries = repo.buildCustomerLedgerEntries(custMemos, custCredits, custPayments)
-        pdfGenerator.generateCustomerLedgerPdf(customer, entries, settings.value)
+
+        val openingPaisa = if (isOldPeriod) {
+            custCredits.filter { !it.isReversed && it.sourceType == CreditSourceType.OPENING_CARRYOVER }.sumOf { it.amountPaisa }
+        } else customer.openingBalancePaisa
+
+        val creditPaisa = if (isOldPeriod) {
+            custCredits.filter { !it.isReversed }.sumOf { it.amountPaisa } +
+                custMemos.filter { !it.memo.isCancelled }.sumOf { it.memo.outstandingPaisa }
+        } else customer.totalCreditPaisa
+
+        val paidPaisa = if (isOldPeriod) {
+            custPayments.filter { !it.isReversed }.sumOf { it.amountPaisa } +
+                custMemos.filter { !it.memo.isCancelled }.sumOf { it.memo.paidPaisa }
+        } else customer.totalPaymentsPaisa
+
+        val balancePaisa = if (isOldPeriod) {
+            entries.firstOrNull()?.runningBalancePaisa ?: 0L
+        } else customer.currentBalancePaisa
+
+        pdfGenerator.generateCustomerLedgerPdf(
+            customer = customer,
+            entries = entries,
+            settings = settings.value,
+            periodLabel = periodLabel,
+            summaryOpeningPaisa = openingPaisa,
+            summaryCreditPaisa = creditPaisa,
+            summaryPaidPaisa = paidPaisa,
+            summaryBalancePaisa = balancePaisa
+        )
     }
 
     suspend fun generateCustomersPdfZip(targetCustomers: List<CustomerEntity>, zipName: String): File =
         withContext(Dispatchers.IO) {
+            val activePeriodId = activeHalKhata.value?.id
             val pairs = targetCustomers.map { c ->
-                val cm = memos.value.filter { it.memo.customerId == c.id }
-                val cc = credits.value.filter { it.customerId == c.id }
-                val cp = payments.value.filter { it.customerId == c.id }
+                val cm = memos.value.filter {
+                    it.memo.customerId == c.id && (activePeriodId == null || it.memo.halKhataPeriodId == activePeriodId)
+                }
+                val cc = credits.value.filter {
+                    it.customerId == c.id && (activePeriodId == null || it.halKhataPeriodId == activePeriodId)
+                }
+                val cp = payments.value.filter {
+                    it.customerId == c.id && (activePeriodId == null || it.halKhataPeriodId == activePeriodId)
+                }
                 c to repo.buildCustomerLedgerEntries(cm, cc, cp)
             }
             pdfGenerator.generateCustomerPdfZip(pairs, settings.value, zipName)
@@ -638,6 +690,79 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         ?: return@withContext OperationResult.Error("ফাইল পড়া সম্ভব হয়নি")
                     backupManager.restoreFromBytes(bytes, fileName)
                 }
+                when (res) {
+                    is OperationResult.Success -> {
+                        postMessage(res.data)
+                        onDone(true)
+                    }
+                    is OperationResult.Error -> {
+                        postMessage(res.messageBn)
+                        onDone(false)
+                    }
+                }
+            } finally {
+                _isSubmitting.value = false
+            }
+        }
+    }
+
+    fun previewBackupFile(file: File, onPreview: (OperationResult<BackupPreviewInfo>) -> Unit) {
+        viewModelScope.launch {
+            val res = withContext(Dispatchers.IO) { backupManager.previewBackupFile(file) }
+            onPreview(res)
+        }
+    }
+
+    fun restoreFromFile(file: File, onDone: (Boolean) -> Unit = {}) {
+        if (_isSubmitting.value) return
+        viewModelScope.launch {
+            _isSubmitting.value = true
+            try {
+                val res = withContext(Dispatchers.IO) { backupManager.restoreFromFile(file) }
+                when (res) {
+                    is OperationResult.Success -> {
+                        postMessage(res.data)
+                        onDone(true)
+                    }
+                    is OperationResult.Error -> {
+                        postMessage(res.messageBn)
+                        onDone(false)
+                    }
+                }
+            } finally {
+                _isSubmitting.value = false
+            }
+        }
+    }
+
+    fun createCompactBackupCode(onResult: (OperationResult<String>) -> Unit) {
+        if (_isSubmitting.value) return
+        viewModelScope.launch {
+            _isSubmitting.value = true
+            try {
+                val res = withContext(Dispatchers.IO) { backupManager.createCompactBackupCode() }
+                if (res is OperationResult.Error) postMessage(res.messageBn)
+                else if (res is OperationResult.Success) postMessage(res.messageBn)
+                onResult(res)
+            } finally {
+                _isSubmitting.value = false
+            }
+        }
+    }
+
+    fun previewCompactBackupCode(code: String, onPreview: (OperationResult<BackupPreviewInfo>) -> Unit) {
+        viewModelScope.launch {
+            val res = withContext(Dispatchers.IO) { backupManager.previewCompactBackupCode(code) }
+            onPreview(res)
+        }
+    }
+
+    fun restoreFromCompactCode(code: String, onDone: (Boolean) -> Unit = {}) {
+        if (_isSubmitting.value) return
+        viewModelScope.launch {
+            _isSubmitting.value = true
+            try {
+                val res = withContext(Dispatchers.IO) { backupManager.restoreFromCompactCode(code) }
                 when (res) {
                     is OperationResult.Success -> {
                         postMessage(res.data)

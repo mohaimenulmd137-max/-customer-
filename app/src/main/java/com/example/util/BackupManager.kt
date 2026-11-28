@@ -3,8 +3,11 @@ package com.example.util
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.database.Cursor
+import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import android.os.Build
+import android.util.Base64
 import androidx.core.app.NotificationCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.room.withTransaction
@@ -15,15 +18,19 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.example.R
 import com.example.data.local.*
+import com.example.data.repository.AccountingRepository
 import com.example.domain.BackupPreviewInfo
 import com.example.domain.OperationResult
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
@@ -73,7 +80,7 @@ class BackupManager(
             put("auditLogs", JSONArray().apply { auditLogs.forEach { put(auditToJson(it)) } })
         }
 
-        val payloadString = payload.toString()
+        val payloadString = canonicalJson(payload)
         val checksum = PinSecurityHelper.sha256(payloadString.toByteArray(Charsets.UTF_8))
         val envelope = JSONObject().apply {
             put("checksumSha256", checksum)
@@ -92,8 +99,8 @@ class BackupManager(
                 throw IllegalStateException("ডাটাবেস যাচাই ব্যর্থ: ${integrity.message}")
             }
 
-            // Flush WAL so raw SQLite .db copy is completely self-contained
-            db.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(FULL)").use { }
+            // Flush WAL completely so raw SQLite .db copy is self-contained
+            db.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(TRUNCATE)").use { }
 
             val (jsonText, checksum) = createJsonSnapshot()
             val fileName = customFileName ?: "bakir_khata_backup_${System.currentTimeMillis()}.zip"
@@ -175,6 +182,10 @@ class BackupManager(
                 verified = true
             )
             val id = db.backupMetadataDao().insert(meta)
+            val settings = db.appSettingsDao().getSettings()
+            if (settings != null && settings.backupFolderUri.isNotBlank()) {
+                copyBackupToSafFolder(outFile, settings.backupFolderUri, "application/json")
+            }
             OperationResult.Success(meta.copy(id = id), "JSON ব্যাকআপ সংরক্ষিত হয়েছে")
         } catch (e: Exception) {
             val failMeta = BackupMetadataEntity(
@@ -196,7 +207,7 @@ class BackupManager(
         return try {
             val integrity = db.verifyIntegrity()
             if (!integrity.isValid) throw IllegalStateException(integrity.message)
-            db.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(FULL)").use { }
+            db.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(TRUNCATE)").use { }
             val dbFile = context.getDatabasePath(BakirKhataDatabase.DB_NAME)
             if (!dbFile.exists()) throw IllegalStateException("ডাটাবেস ফাইল পাওয়া যায়নি")
             val fileName = "bakir_khata_${System.currentTimeMillis()}.db"
@@ -213,21 +224,66 @@ class BackupManager(
                 verified = true
             )
             val id = db.backupMetadataDao().insert(meta)
+            val settings = db.appSettingsDao().getSettings()
+            if (settings != null && settings.backupFolderUri.isNotBlank()) {
+                copyBackupToSafFolder(outFile, settings.backupFolderUri, "application/octet-stream")
+            }
             OperationResult.Success(meta.copy(id = id), "ডাটাবেস (.db) ব্যাকআপ সম্পন্ন হয়েছে")
         } catch (e: Exception) {
             OperationResult.Error("ডাটাবেস ব্যাকআপ ব্যর্থ: ${e.message}")
         }
     }
 
+    suspend fun createCompactBackupCode(): OperationResult<String> {
+        return try {
+            val (jsonText, _) = createJsonSnapshot()
+            val gzipped = ByteArrayOutputStream().use { baos ->
+                GZIPOutputStream(baos).use { gz ->
+                    gz.write(jsonText.toByteArray(Charsets.UTF_8))
+                }
+                baos.toByteArray()
+            }
+            val encoded = Base64.encodeToString(gzipped, Base64.NO_WRAP)
+            OperationResult.Success(
+                "$COMPACT_CODE_PREFIX$encoded",
+                "কমপ্যাক্ট ব্যাকআপ কোড তৈরি হয়েছে (${encoded.length} অক্ষর)"
+            )
+        } catch (e: Exception) {
+            OperationResult.Error("ব্যাকআপ কোড তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+        }
+    }
+
+    fun previewCompactBackupCode(code: String): OperationResult<BackupPreviewInfo> {
+        val bytes = decodeCompactBackupCode(code)
+            ?: return OperationResult.Error("ব্যাকআপ কোডটি সঠিক নয়। পুরো কোড (BK1:... সহ) কপি করে দিন।")
+        return previewBackupBytes(bytes, "ব্যাকআপ কোড")
+    }
+
+    suspend fun restoreFromCompactCode(code: String): OperationResult<String> {
+        val bytes = decodeCompactBackupCode(code)
+            ?: return OperationResult.Error("ব্যাকআপ কোডটি সঠিক নয়। পুরো কোড (BK1:... সহ) কপি করে দিন।")
+        return restoreFromBytes(bytes, "ব্যাকআপ কোড")
+    }
+
+    fun previewBackupFile(file: File): OperationResult<BackupPreviewInfo> {
+        if (!file.exists() || !file.canRead()) {
+            return OperationResult.Error("ব্যাকআপ ফাইলটি ফোনে খুঁজে পাওয়া যায়নি")
+        }
+        return previewBackupBytes(file.readBytes(), file.name)
+    }
+
+    suspend fun restoreFromFile(file: File): OperationResult<String> {
+        if (!file.exists() || !file.canRead()) {
+            return OperationResult.Error("ব্যাকআপ ফাইলটি ফোনে খুঁজে পাওয়া যায়নি")
+        }
+        return restoreFromBytes(file.readBytes(), file.name)
+    }
+
     fun verifyBackupFile(file: File): Boolean {
         if (!file.exists() || file.length() == 0L) return false
         return try {
-            val jsonText = extractJsonFromBytes(file.readBytes(), file.name) ?: return false
-            val env = JSONObject(jsonText)
-            val expectedChecksum = env.getString("checksumSha256")
-            val payload = env.getJSONObject("payload")
-            val actualChecksum = PinSecurityHelper.sha256(payload.toString().toByteArray(Charsets.UTF_8))
-            expectedChecksum == actualChecksum
+            val resolved = resolveBackupPayload(file.readBytes(), file.name) ?: return false
+            resolved.checksumValid
         } catch (_: Exception) {
             false
         }
@@ -235,14 +291,9 @@ class BackupManager(
 
     fun previewBackupBytes(bytes: ByteArray, fileName: String): OperationResult<BackupPreviewInfo> {
         return try {
-            val jsonText = extractJsonFromBytes(bytes, fileName)
-                ?: return OperationResult.Error("সঠিক বাকির খাতা ব্যাকআপ ফাইল নয় (.zip বা .json)")
-            val env = JSONObject(jsonText)
-            val expectedChecksum = env.optString("checksumSha256", "")
-            val payload = env.getJSONObject("payload")
-            val actualChecksum = PinSecurityHelper.sha256(payload.toString().toByteArray(Charsets.UTF_8))
-            val checksumValid = expectedChecksum.isNotBlank() && expectedChecksum == actualChecksum
-
+            val resolved = resolveBackupPayload(bytes, fileName)
+                ?: return OperationResult.Error("সঠিক বাকির খাতা ব্যাকআপ ফাইল নয় (.zip, .json বা .db)")
+            val payload = resolved.payload
             val customersArr = payload.optJSONArray("customers") ?: JSONArray()
             var totalDebt = 0L
             for (i in 0 until customersArr.length()) {
@@ -260,8 +311,8 @@ class BackupManager(
                     creditCount = (payload.optJSONArray("credits") ?: JSONArray()).length(),
                     expenseCount = (payload.optJSONArray("expenses") ?: JSONArray()).length(),
                     totalOutstandingDebtPaisa = totalDebt,
-                    checksumValid = checksumValid,
-                    formatLabel = if (fileName.endsWith(".zip", true)) "ZIP প্যাকেজ" else "JSON স্ন্যাপশট"
+                    checksumValid = resolved.checksumValid,
+                    formatLabel = resolved.formatLabel
                 )
             )
         } catch (e: Exception) {
@@ -278,14 +329,14 @@ class BackupManager(
     }
 
     suspend fun restoreFromBytes(bytes: ByteArray, fileName: String): OperationResult<String> {
-        val jsonText = extractJsonFromBytes(bytes, fileName)
-            ?: return OperationResult.Error("অবৈধ ব্যাকআপ ফাইল")
+        val resolved = try {
+            resolveBackupPayload(bytes, fileName)
+        } catch (e: Exception) {
+            return OperationResult.Error("ব্যাকআপ ফাইল যাচাই ব্যর্থ: ${e.message ?: "অবৈধ ফাইল"}")
+        } ?: return OperationResult.Error("অবৈধ ব্যাকআপ ফাইল")
+
         return try {
-            val env = JSONObject(jsonText)
-            val expectedChecksum = env.optString("checksumSha256", "")
-            val payload = env.getJSONObject("payload")
-            val actualChecksum = PinSecurityHelper.sha256(payload.toString().toByteArray(Charsets.UTF_8))
-            if (expectedChecksum.isBlank() || expectedChecksum != actualChecksum) {
+            if (!resolved.checksumValid) {
                 return OperationResult.Error("ব্যাকআপ ফাইল ক্ষতিগ্রস্ত বা চেকসাম মিলছে না! পূর্বের ডাটা নিরাপদ রাখা হয়েছে।")
             }
 
@@ -293,7 +344,7 @@ class BackupManager(
             val preRestoreSnapshot = createJsonSnapshot().first
 
             try {
-                restorePayloadAtomically(payload)
+                restorePayloadAtomically(resolved.payload)
             } catch (e: Exception) {
                 // Attempt rollback from pre-restore snapshot
                 try {
@@ -315,24 +366,62 @@ class BackupManager(
     }
 
     private suspend fun restorePayloadAtomically(payload: JSONObject) {
-        val settings = jsonToSettings(payload.getJSONObject("settings"))
+        val rawSettings = if (!payload.isNull("settings")) {
+            jsonToSettings(payload.getJSONObject("settings"))
+        } else {
+            AppSettingsEntity()
+        }
         val customers = parseArray(payload.optJSONArray("customers")) { jsonToCustomer(it) }
+            .distinctBy { it.id }
             .distinctBy { it.customerCode }
+        val survivingCustomerIds = customers.map { it.id }.toSet()
+
         val memos = parseArray(payload.optJSONArray("memos")) { jsonToMemo(it) }
+            .distinctBy { it.id }
             .distinctBy { it.requestToken }
+        val survivingMemoIds = memos.map { it.id }.toSet()
+
         val memoItems = parseArray(payload.optJSONArray("memoItems")) { jsonToMemoItem(it) }
+            .filter { it.memoId in survivingMemoIds }
         val payments = parseArray(payload.optJSONArray("payments")) { jsonToPayment(it) }
             .distinctBy { it.requestToken }
+            .filter { it.customerId in survivingCustomerIds }
         val credits = parseArray(payload.optJSONArray("credits")) { jsonToCredit(it) }
             .distinctBy { it.requestToken }
+            .filter { it.customerId in survivingCustomerIds }
         val expenses = parseArray(payload.optJSONArray("expenses")) { jsonToExpense(it) }
             .distinctBy { it.requestToken }
         val cashbox = parseArray(payload.optJSONArray("cashbox")) { jsonToCashbox(it) }
             .distinctBy { it.requestToken }
-        val periods = parseArray(payload.optJSONArray("halKhataPeriods")) { jsonToPeriod(it) }
+
+        val rawPeriods = parseArray(payload.optJSONArray("halKhataPeriods")) { jsonToPeriod(it) }
+            .distinctBy { it.id }
+        val periods = if (rawPeriods.any { it.status == HalKhataStatus.ACTIVE }) {
+            rawPeriods
+        } else if (rawPeriods.isNotEmpty()) {
+            val lastIdx = rawPeriods.lastIndex
+            rawPeriods.mapIndexed { idx, p -> if (idx == lastIdx) p.copy(status = HalKhataStatus.ACTIVE) else p }
+        } else {
+            listOf(
+                HalKhataPeriodEntity(
+                    id = 1L,
+                    name = "প্রথম হালখাতা",
+                    startDate = System.currentTimeMillis(),
+                    status = HalKhataStatus.ACTIVE
+                )
+            )
+        }
+        val survivingPeriodIds = periods.map { it.id }.toSet()
+        val activePeriod = periods.last { it.status == HalKhataStatus.ACTIVE }
+        val settings = rawSettings.copy(activeHalKhataPeriodId = activePeriod.id)
+
         val balances = parseArray(payload.optJSONArray("halKhataBalances")) { jsonToBalance(it) }
+            .filter { it.periodId in survivingPeriodIds && it.customerId in survivingCustomerIds }
         val tempCustomers = parseArray(payload.optJSONArray("tempCustomers")) { jsonToTempCustomer(it) }
+            .distinctBy { it.id }
+        val survivingTempIds = tempCustomers.map { it.id }.toSet()
         val tempMemos = parseArray(payload.optJSONArray("tempMemos")) { jsonToTempMemo(it) }
+            .filter { it.tempCustomerId in survivingTempIds }
         val auditLogs = parseArray(payload.optJSONArray("auditLogs")) { jsonToAudit(it) }
 
         db.withTransaction {
@@ -377,14 +466,390 @@ class BackupManager(
         }
     }
 
+    private data class ResolvedBackupPayload(
+        val payload: JSONObject,
+        val checksumValid: Boolean,
+        val formatLabel: String
+    )
+
+    private fun looksLikeZip(bytes: ByteArray, fileName: String): Boolean {
+        return (bytes.size >= 2 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()) ||
+            fileName.endsWith(".zip", ignoreCase = true)
+    }
+
+    private fun looksLikeSqlite(bytes: ByteArray): Boolean {
+        val header = "SQLite format 3\u0000".toByteArray(Charsets.US_ASCII)
+        if (bytes.size < header.size) return false
+        for (i in header.indices) {
+            if (bytes[i] != header[i]) return false
+        }
+        return true
+    }
+
+    private fun decodeCompactBackupCode(code: String): ByteArray? {
+        val trimmed = code.trim()
+        if (!trimmed.startsWith(COMPACT_CODE_PREFIX, ignoreCase = true)) return null
+        val b64 = trimmed.substring(COMPACT_CODE_PREFIX.length).replace("\\s+".toRegex(), "")
+        if (b64.isEmpty()) return null
+        return try {
+            val compressed = Base64.decode(b64, Base64.DEFAULT)
+            GZIPInputStream(ByteArrayInputStream(compressed)).use { gz ->
+                gz.readBytes()
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun resolveBackupPayload(bytes: ByteArray, fileName: String): ResolvedBackupPayload? {
+        if (looksLikeSqlite(bytes)) {
+            return resolveSqliteBackup(bytes)
+        }
+        val isZip = looksLikeZip(bytes, fileName)
+        if (isZip) {
+            var jsonEntryText: String? = null
+            var dbEntryBytes: ByteArray? = null
+            try {
+                ZipInputStream(bytes.inputStream()).use { zis ->
+                    var entry = zis.nextEntry
+                    while (entry != null) {
+                        val nameLower = entry.name.lowercase()
+                        if (!entry.isDirectory) {
+                            if (nameLower == "backup_data.json" || (jsonEntryText == null && nameLower.endsWith(".json"))) {
+                                val baos = ByteArrayOutputStream()
+                                zis.copyTo(baos)
+                                jsonEntryText = baos.toString(Charsets.UTF_8.name())
+                            } else if (nameLower.endsWith(".db") || entry.name == BakirKhataDatabase.DB_NAME) {
+                                val baos = ByteArrayOutputStream()
+                                zis.copyTo(baos)
+                                dbEntryBytes = baos.toByteArray()
+                            }
+                        }
+                        entry = zis.nextEntry
+                    }
+                }
+            } catch (_: Exception) {
+                return null
+            }
+            if (jsonEntryText != null) {
+                val parsed = parseJsonEnvelope(jsonEntryText!!, "ZIP প্যাকেজ")
+                if (parsed != null && parsed.checksumValid) return parsed
+                if (dbEntryBytes != null) {
+                    resolveSqliteBackup(dbEntryBytes!!)?.let { return it }
+                }
+                return parsed
+            }
+            if (dbEntryBytes != null) {
+                return resolveSqliteBackup(dbEntryBytes!!)
+            }
+            return null
+        }
+
+        val rawText = bytes.toString(Charsets.UTF_8).trim()
+        if (rawText.startsWith(COMPACT_CODE_PREFIX, ignoreCase = true)) {
+            val decoded = decodeCompactBackupCode(rawText) ?: return null
+            return parseJsonEnvelope(decoded.toString(Charsets.UTF_8), "ব্যাকআপ কোড")
+        }
+        return parseJsonEnvelope(rawText, "JSON স্ন্যাপশট")
+    }
+
+    private fun parseJsonEnvelope(jsonText: String, formatLabel: String): ResolvedBackupPayload? {
+        val env = JSONObject(jsonText)
+        val expectedChecksum = env.optString("checksumSha256", "")
+        val payload = env.optJSONObject("payload") ?: return null
+        val directChecksum = PinSecurityHelper.sha256(payload.toString().toByteArray(Charsets.UTF_8))
+        val canonicalChecksum = PinSecurityHelper.sha256(canonicalJson(payload).toByteArray(Charsets.UTF_8))
+        val checksumValid = expectedChecksum.isNotBlank() &&
+            (expectedChecksum.equals(directChecksum, ignoreCase = true) ||
+                expectedChecksum.equals(canonicalChecksum, ignoreCase = true))
+        return ResolvedBackupPayload(
+            payload = payload,
+            checksumValid = checksumValid,
+            formatLabel = formatLabel
+        )
+    }
+
+    private fun canonicalJson(value: Any?): String {
+        return when (value) {
+            is JSONObject -> {
+                val keys = value.keys().asSequence().toList().sorted()
+                buildString {
+                    append('{')
+                    keys.forEachIndexed { index, k ->
+                        if (index > 0) append(',')
+                        append(JSONObject.quote(k))
+                        append(':')
+                        val v = value.opt(k)
+                        append(canonicalJson(v))
+                    }
+                    append('}')
+                }
+            }
+            is JSONArray -> {
+                buildString {
+                    append('[')
+                    for (i in 0 until value.length()) {
+                        if (i > 0) append(',')
+                        append(canonicalJson(value.opt(i)))
+                    }
+                    append(']')
+                }
+            }
+            null, JSONObject.NULL -> "null"
+            is String -> JSONObject.quote(value)
+            else -> value.toString()
+        }
+    }
+
+    private fun resolveSqliteBackup(bytes: ByteArray): ResolvedBackupPayload? {
+        val tmpFile = File(context.cacheDir, "inspect_bakirkhata_${System.currentTimeMillis()}.db")
+        return try {
+            tmpFile.writeBytes(bytes)
+            val sqliteDb = SQLiteDatabase.openDatabase(tmpFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+            sqliteDb.use { sdb ->
+                var integrityOk = false
+                sdb.rawQuery("PRAGMA integrity_check", null).use { c ->
+                    if (c.moveToFirst()) {
+                        integrityOk = c.getString(0).equals("ok", ignoreCase = true)
+                    }
+                }
+                if (!integrityOk) return null
+
+                var hasCustomersTable = false
+                sdb.rawQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='customers'", null).use { c ->
+                    hasCustomersTable = c.moveToFirst()
+                }
+                if (!hasCustomersTable) return null
+
+                fun Cursor.str(col: String, def: String = ""): String {
+                    val i = getColumnIndex(col)
+                    return if (i >= 0 && !isNull(i)) getString(i) else def
+                }
+                fun Cursor.lng(col: String, def: Long = 0L): Long {
+                    val i = getColumnIndex(col)
+                    return if (i >= 0 && !isNull(i)) getLong(i) else def
+                }
+                fun Cursor.nullableLng(col: String): Long? {
+                    val i = getColumnIndex(col)
+                    return if (i >= 0 && !isNull(i)) getLong(i) else null
+                }
+                fun Cursor.bool(col: String, def: Boolean = false): Boolean {
+                    val i = getColumnIndex(col)
+                    return if (i >= 0 && !isNull(i)) getInt(i) != 0 else def
+                }
+                fun readTable(sql: String, mapper: (Cursor) -> JSONObject): JSONArray {
+                    val arr = JSONArray()
+                    sdb.rawQuery(sql, null).use { c ->
+                        while (c.moveToNext()) arr.put(mapper(c))
+                    }
+                    return arr
+                }
+
+                var settingsJson = settingsToJson(AppSettingsEntity())
+                sdb.rawQuery("SELECT * FROM app_settings WHERE id = 1 LIMIT 1", null).use { c ->
+                    if (c.moveToFirst()) {
+                        settingsJson = settingsToJson(
+                            AppSettingsEntity(
+                                id = 1,
+                                shopName = c.str("shopName", "আমার দোকান"),
+                                ownerName = c.str("ownerName"),
+                                shopAddress = c.str("shopAddress"),
+                                shopPhone = c.str("shopPhone"),
+                                currencySymbol = c.str("currencySymbol", "৳"),
+                                memoPrefix = c.str("memoPrefix", "MEMO"),
+                                customUnitsJson = c.str("customUnitsJson", "[]"),
+                                customExpenseCategoriesJson = c.str("customExpenseCategoriesJson", "[]"),
+                                backupFrequency = c.str("backupFrequency", "DAILY"),
+                                backupFolderUri = c.str("backupFolderUri"),
+                                themeMode = c.str("themeMode", "SYSTEM"),
+                                pdfFooterNote = c.str("pdfFooterNote", "ধন্যবাদ, আবার আসবেন।"),
+                                highExpenseThresholdPaisa = c.lng("highExpenseThresholdPaisa", 500000L),
+                                overdueDaysThreshold = c.lng("overdueDaysThreshold", 30L).toInt(),
+                                activeHalKhataPeriodId = c.lng("activeHalKhataPeriodId", 1L),
+                                lastActualCashCountPaisa = c.nullableLng("lastActualCashCountPaisa"),
+                                lastActualCashCountAt = c.nullableLng("lastActualCashCountAt"),
+                                updatedAt = c.lng("updatedAt", System.currentTimeMillis())
+                            )
+                        )
+                    }
+                }
+
+                val payload = JSONObject().apply {
+                    put("schemaVersion", 1)
+                    put("createdAt", System.currentTimeMillis())
+                    put("shopName", settingsJson.optString("shopName", "আমার দোকান"))
+                    put("settings", settingsJson)
+                    put("customers", readTable("SELECT * FROM customers ORDER BY id ASC") { c ->
+                        customerToJson(
+                            CustomerEntity(
+                                id = c.lng("id"), customerCode = c.str("customerCode"), name = c.str("name"),
+                                address = c.str("address"), mobile = c.str("mobile"), nickname = c.str("nickname"),
+                                notes = c.str("notes"), openingBalancePaisa = c.lng("openingBalancePaisa"),
+                                currentBalancePaisa = c.lng("currentBalancePaisa"), totalPurchasesPaisa = c.lng("totalPurchasesPaisa"),
+                                totalCreditPaisa = c.lng("totalCreditPaisa"), totalPaymentsPaisa = c.lng("totalPaymentsPaisa"),
+                                halKhataPeriodId = c.lng("halKhataPeriodId", 1L),
+                                oldestUnpaidTimestamp = c.nullableLng("oldestUnpaidTimestamp"),
+                                lastTransactionDate = c.nullableLng("lastTransactionDate"),
+                                lastPaymentDate = c.nullableLng("lastPaymentDate"),
+                                createdAt = c.lng("createdAt")
+                            )
+                        )
+                    })
+                    put("memos", readTable("SELECT * FROM memos ORDER BY id ASC") { c ->
+                        memoToJson(
+                            MemoEntity(
+                                id = c.lng("id"), memoNumber = c.str("memoNumber"), requestToken = c.str("requestToken"),
+                                customerId = c.nullableLng("customerId"), customerNameSnapshot = c.str("customerNameSnapshot"),
+                                customerAddressSnapshot = c.str("customerAddressSnapshot"), saleType = c.str("saleType"),
+                                subtotalPaisa = c.lng("subtotalPaisa"), discountPaisa = c.lng("discountPaisa"),
+                                grandTotalPaisa = c.lng("grandTotalPaisa"), paidPaisa = c.lng("paidPaisa"),
+                                outstandingPaisa = c.lng("outstandingPaisa"), notes = c.str("notes"),
+                                halKhataPeriodId = c.lng("halKhataPeriodId", 1L),
+                                isCancelled = c.bool("isCancelled"), needsReview = c.bool("needsReview"),
+                                createdAt = c.lng("createdAt"), updatedAt = c.lng("updatedAt")
+                            )
+                        )
+                    })
+                    put("memoItems", readTable("SELECT * FROM memo_items ORDER BY id ASC") { c ->
+                        memoItemToJson(
+                            MemoItemEntity(
+                                id = c.lng("id"), memoId = c.lng("memoId"), productName = c.str("productName"),
+                                quantityMillis = c.lng("quantityMillis"), unit = c.str("unit"),
+                                unitPricePaisa = c.lng("unitPricePaisa"), lineTotalPaisa = c.lng("lineTotalPaisa")
+                            )
+                        )
+                    })
+                    put("payments", readTable("SELECT * FROM payments ORDER BY id ASC") { c ->
+                        paymentToJson(
+                            PaymentEntity(
+                                id = c.lng("id"), receiptNumber = c.str("receiptNumber"), requestToken = c.str("requestToken"),
+                                customerId = c.lng("customerId"), amountPaisa = c.lng("amountPaisa"),
+                                previousBalancePaisa = c.lng("previousBalancePaisa"), newBalancePaisa = c.lng("newBalancePaisa"),
+                                memoId = c.nullableLng("memoId"), notes = c.str("notes"),
+                                halKhataPeriodId = c.lng("halKhataPeriodId", 1L),
+                                isReversed = c.bool("isReversed"), reversedById = c.nullableLng("reversedById"),
+                                needsReview = c.bool("needsReview"), createdAt = c.lng("createdAt")
+                            )
+                        )
+                    })
+                    put("credits", readTable("SELECT * FROM credit_transactions ORDER BY id ASC") { c ->
+                        creditToJson(
+                            CreditTransactionEntity(
+                                id = c.lng("id"), transactionCode = c.str("transactionCode"), requestToken = c.str("requestToken"),
+                                customerId = c.lng("customerId"), amountPaisa = c.lng("amountPaisa"),
+                                previousBalancePaisa = c.lng("previousBalancePaisa"), newBalancePaisa = c.lng("newBalancePaisa"),
+                                description = c.str("description"), notes = c.str("notes"),
+                                sourceType = c.str("sourceType", CreditSourceType.QUICK_CREDIT),
+                                memoId = c.nullableLng("memoId"), halKhataPeriodId = c.lng("halKhataPeriodId", 1L),
+                                isReversed = c.bool("isReversed"), needsReview = c.bool("needsReview"),
+                                createdAt = c.lng("createdAt")
+                            )
+                        )
+                    })
+                    put("expenses", readTable("SELECT * FROM expenses ORDER BY id ASC") { c ->
+                        expenseToJson(
+                            ExpenseEntity(
+                                id = c.lng("id"), expenseCode = c.str("expenseCode"), requestToken = c.str("requestToken"),
+                                category = c.str("category"), amountPaisa = c.lng("amountPaisa"),
+                                description = c.str("description"), notes = c.str("notes"),
+                                paidFromCashbox = c.bool("paidFromCashbox", true), halKhataPeriodId = c.lng("halKhataPeriodId", 1L),
+                                isCancelled = c.bool("isCancelled"), needsReview = c.bool("needsReview"),
+                                createdAt = c.lng("createdAt"), updatedAt = c.lng("updatedAt")
+                            )
+                        )
+                    })
+                    put("cashbox", readTable("SELECT * FROM cashbox_transactions ORDER BY id ASC") { c ->
+                        cashboxToJson(
+                            CashboxTransactionEntity(
+                                id = c.lng("id"), transactionCode = c.str("transactionCode"), requestToken = c.str("requestToken"),
+                                type = c.str("type"), direction = c.str("direction"), amountPaisa = c.lng("amountPaisa"),
+                                sourceType = c.str("sourceType"), sourceId = c.nullableLng("sourceId"),
+                                description = c.str("description"), notes = c.str("notes"),
+                                halKhataPeriodId = c.lng("halKhataPeriodId", 1L), isReversed = c.bool("isReversed"),
+                                createdAt = c.lng("createdAt")
+                            )
+                        )
+                    })
+                    put("halKhataPeriods", readTable("SELECT * FROM hal_khata_periods ORDER BY id ASC") { c ->
+                        periodToJson(
+                            HalKhataPeriodEntity(
+                                id = c.lng("id"), name = c.str("name"), description = c.str("description"),
+                                startDate = c.lng("startDate"), endDate = c.nullableLng("endDate"),
+                                status = c.str("status", HalKhataStatus.ACTIVE),
+                                totalSalesPaisa = c.lng("totalSalesPaisa"), totalCreditPaisa = c.lng("totalCreditPaisa"),
+                                totalPaymentsPaisa = c.lng("totalPaymentsPaisa"), totalClosingDebtPaisa = c.lng("totalClosingDebtPaisa"),
+                                closedAt = c.nullableLng("closedAt"), archivePdfPath = c.str("archivePdfPath"),
+                                archiveBackupPath = c.str("archiveBackupPath"), backupVerified = c.bool("backupVerified"),
+                                createdAt = c.lng("createdAt")
+                            )
+                        )
+                    })
+                    put("halKhataBalances", readTable("SELECT * FROM hal_khata_customer_balances ORDER BY id ASC") { c ->
+                        balanceToJson(
+                            HalKhataCustomerBalanceEntity(
+                                id = c.lng("id"), periodId = c.lng("periodId"), customerId = c.lng("customerId"),
+                                customerCode = c.str("customerCode"), customerName = c.str("customerName"),
+                                openingBalancePaisa = c.lng("openingBalancePaisa"), totalPurchasesPaisa = c.lng("totalPurchasesPaisa"),
+                                totalPaymentsPaisa = c.lng("totalPaymentsPaisa"), closingBalancePaisa = c.lng("closingBalancePaisa"),
+                                carriedForward = c.bool("carriedForward"), recordedAt = c.lng("recordedAt")
+                            )
+                        )
+                    })
+                    put("tempCustomers", readTable("SELECT * FROM temporary_customers ORDER BY id ASC") { c ->
+                        tempCustomerToJson(
+                            TemporaryCustomerEntity(
+                                id = c.lng("id"), tempCode = c.str("tempCode"), name = c.str("name"),
+                                address = c.str("address"), mobile = c.str("mobile"), notes = c.str("notes"),
+                                totalCreditPaisa = c.lng("totalCreditPaisa"), totalPaidPaisa = c.lng("totalPaidPaisa"),
+                                outstandingPaisa = c.lng("outstandingPaisa"), convertedCustomerId = c.nullableLng("convertedCustomerId"),
+                                isConverted = c.bool("isConverted"), createdAt = c.lng("createdAt"), updatedAt = c.lng("updatedAt")
+                            )
+                        )
+                    })
+                    put("tempMemos", readTable("SELECT * FROM temporary_memos ORDER BY id ASC") { c ->
+                        tempMemoToJson(
+                            TemporaryMemoEntity(
+                                id = c.lng("id"), tempCustomerId = c.lng("tempCustomerId"), memoNumber = c.str("memoNumber"),
+                                type = c.str("type"), description = c.str("description"), itemsJson = c.str("itemsJson"),
+                                totalAmountPaisa = c.lng("totalAmountPaisa"), paidPaisa = c.lng("paidPaisa"),
+                                creditPaisa = c.lng("creditPaisa"), notes = c.str("notes"), createdAt = c.lng("createdAt")
+                            )
+                        )
+                    })
+                    put("auditLogs", readTable("SELECT * FROM audit_logs ORDER BY id ASC") { c ->
+                        auditToJson(
+                            AuditLogEntity(
+                                id = c.lng("id"), transactionRef = c.str("transactionRef"), entityType = c.str("entityType"),
+                                entityId = c.lng("entityId"), actionType = c.str("actionType"),
+                                previousValueJson = c.str("previousValueJson"), newValueJson = c.str("newValueJson"),
+                                reason = c.str("reason"), relatedCustomerId = c.nullableLng("relatedCustomerId"),
+                                relatedMemoId = c.nullableLng("relatedMemoId"), relatedPaymentId = c.nullableLng("relatedPaymentId"),
+                                createdAt = c.lng("createdAt")
+                            )
+                        )
+                    })
+                }
+                ResolvedBackupPayload(
+                    payload = payload,
+                    checksumValid = true,
+                    formatLabel = "SQLite ডাটাবেস (.db)"
+                )
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            runCatching { tmpFile.delete() }
+        }
+    }
+
     private fun extractJsonFromBytes(bytes: ByteArray, fileName: String): String? {
-        val looksLikeZip = fileName.endsWith(".zip", ignoreCase = true) ||
-            (bytes.size >= 2 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte())
-        if (looksLikeZip) {
+        if (looksLikeZip(bytes, fileName)) {
             ZipInputStream(bytes.inputStream()).use { zis ->
                 var entry = zis.nextEntry
                 while (entry != null) {
-                    if (entry.name == "backup_data.json") {
+                    if (!entry.isDirectory &&
+                        (entry.name == "backup_data.json" || entry.name.endsWith(".json", ignoreCase = true))
+                    ) {
                         val baos = ByteArrayOutputStream()
                         zis.copyTo(baos)
                         return baos.toString(Charsets.UTF_8.name())
@@ -447,6 +912,8 @@ class BackupManager(
         put("highExpenseThresholdPaisa", s.highExpenseThresholdPaisa)
         put("overdueDaysThreshold", s.overdueDaysThreshold)
         put("activeHalKhataPeriodId", s.activeHalKhataPeriodId)
+        s.lastActualCashCountPaisa?.let { put("lastActualCashCountPaisa", it) }
+        s.lastActualCashCountAt?.let { put("lastActualCashCountAt", it) }
         put("updatedAt", s.updatedAt)
     }
 
@@ -467,6 +934,8 @@ class BackupManager(
         highExpenseThresholdPaisa = j.optLong("highExpenseThresholdPaisa", 500000L),
         overdueDaysThreshold = j.optInt("overdueDaysThreshold", 30),
         activeHalKhataPeriodId = j.optLong("activeHalKhataPeriodId", 1L),
+        lastActualCashCountPaisa = if (!j.isNull("lastActualCashCountPaisa")) j.getLong("lastActualCashCountPaisa") else null,
+        lastActualCashCountAt = if (!j.isNull("lastActualCashCountAt")) j.getLong("lastActualCashCountAt") else null,
         updatedAt = j.optLong("updatedAt", System.currentTimeMillis())
     )
 
@@ -485,14 +954,14 @@ class BackupManager(
 
     private fun jsonToCustomer(j: JSONObject) = CustomerEntity(
         id = j.getLong("id"), customerCode = j.getString("customerCode"), name = j.getString("name"),
-        address = j.getString("address"), mobile = j.optString("mobile", ""), nickname = j.optString("nickname", ""),
+        address = j.optString("address", ""), mobile = j.optString("mobile", ""), nickname = j.optString("nickname", ""),
         notes = j.optString("notes", ""), openingBalancePaisa = j.optLong("openingBalancePaisa", 0L),
         currentBalancePaisa = j.optLong("currentBalancePaisa", 0L), totalPurchasesPaisa = j.optLong("totalPurchasesPaisa", 0L),
         totalCreditPaisa = j.optLong("totalCreditPaisa", 0L), totalPaymentsPaisa = j.optLong("totalPaymentsPaisa", 0L),
         halKhataPeriodId = j.optLong("halKhataPeriodId", 1L),
-        oldestUnpaidTimestamp = if (j.has("oldestUnpaidTimestamp")) j.getLong("oldestUnpaidTimestamp") else null,
-        lastTransactionDate = if (j.has("lastTransactionDate")) j.getLong("lastTransactionDate") else null,
-        lastPaymentDate = if (j.has("lastPaymentDate")) j.getLong("lastPaymentDate") else null,
+        oldestUnpaidTimestamp = if (!j.isNull("oldestUnpaidTimestamp")) j.getLong("oldestUnpaidTimestamp") else null,
+        lastTransactionDate = if (!j.isNull("lastTransactionDate")) j.getLong("lastTransactionDate") else null,
+        lastPaymentDate = if (!j.isNull("lastPaymentDate")) j.getLong("lastPaymentDate") else null,
         createdAt = j.optLong("createdAt", System.currentTimeMillis())
     )
 
@@ -508,7 +977,7 @@ class BackupManager(
 
     private fun jsonToMemo(j: JSONObject) = MemoEntity(
         id = j.getLong("id"), memoNumber = j.getString("memoNumber"), requestToken = j.getString("requestToken"),
-        customerId = if (j.has("customerId")) j.getLong("customerId") else null,
+        customerId = if (!j.isNull("customerId")) j.getLong("customerId") else null,
         customerNameSnapshot = j.getString("customerNameSnapshot"),
         customerAddressSnapshot = j.optString("customerAddressSnapshot", ""),
         saleType = j.getString("saleType"), subtotalPaisa = j.getLong("subtotalPaisa"),
@@ -516,7 +985,7 @@ class BackupManager(
         paidPaisa = j.getLong("paidPaisa"), outstandingPaisa = j.getLong("outstandingPaisa"),
         notes = j.optString("notes", ""), halKhataPeriodId = j.optLong("halKhataPeriodId", 1L),
         isCancelled = j.optBoolean("isCancelled", false), needsReview = j.optBoolean("needsReview", false),
-        createdAt = j.getLong("createdAt"), updatedAt = j.optLong("updatedAt")
+        createdAt = j.getLong("createdAt"), updatedAt = j.optLong("updatedAt", j.getLong("createdAt"))
     )
 
     private fun memoItemToJson(i: MemoItemEntity) = JSONObject().apply {
@@ -544,9 +1013,9 @@ class BackupManager(
         id = j.getLong("id"), receiptNumber = j.getString("receiptNumber"), requestToken = j.getString("requestToken"),
         customerId = j.getLong("customerId"), amountPaisa = j.getLong("amountPaisa"),
         previousBalancePaisa = j.getLong("previousBalancePaisa"), newBalancePaisa = j.getLong("newBalancePaisa"),
-        memoId = if (j.has("memoId")) j.getLong("memoId") else null, notes = j.optString("notes", ""),
+        memoId = if (!j.isNull("memoId")) j.getLong("memoId") else null, notes = j.optString("notes", ""),
         halKhataPeriodId = j.optLong("halKhataPeriodId", 1L), isReversed = j.optBoolean("isReversed", false),
-        reversedById = if (j.has("reversedById")) j.getLong("reversedById") else null,
+        reversedById = if (!j.isNull("reversedById")) j.getLong("reversedById") else null,
         needsReview = j.optBoolean("needsReview", false), createdAt = j.getLong("createdAt")
     )
 
@@ -565,7 +1034,7 @@ class BackupManager(
         previousBalancePaisa = j.getLong("previousBalancePaisa"), newBalancePaisa = j.getLong("newBalancePaisa"),
         description = j.optString("description", ""), notes = j.optString("notes", ""),
         sourceType = j.optString("sourceType", CreditSourceType.QUICK_CREDIT),
-        memoId = if (j.has("memoId")) j.getLong("memoId") else null,
+        memoId = if (!j.isNull("memoId")) j.getLong("memoId") else null,
         halKhataPeriodId = j.optLong("halKhataPeriodId", 1L), isReversed = j.optBoolean("isReversed", false),
         needsReview = j.optBoolean("needsReview", false), createdAt = j.getLong("createdAt")
     )
@@ -584,7 +1053,7 @@ class BackupManager(
         description = j.optString("description", ""), notes = j.optString("notes", ""),
         paidFromCashbox = j.optBoolean("paidFromCashbox", true), halKhataPeriodId = j.optLong("halKhataPeriodId", 1L),
         isCancelled = j.optBoolean("isCancelled", false), needsReview = j.optBoolean("needsReview", false),
-        createdAt = j.getLong("createdAt"), updatedAt = j.optLong("updatedAt")
+        createdAt = j.getLong("createdAt"), updatedAt = j.optLong("updatedAt", j.getLong("createdAt"))
     )
 
     private fun cashboxToJson(c: CashboxTransactionEntity) = JSONObject().apply {
@@ -598,8 +1067,8 @@ class BackupManager(
     private fun jsonToCashbox(j: JSONObject) = CashboxTransactionEntity(
         id = j.getLong("id"), transactionCode = j.getString("transactionCode"), requestToken = j.getString("requestToken"),
         type = j.getString("type"), direction = j.getString("direction"), amountPaisa = j.getLong("amountPaisa"),
-        sourceType = j.getString("sourceType"), sourceId = if (j.has("sourceId")) j.getLong("sourceId") else null,
-        description = j.getString("description"), notes = j.optString("notes", ""),
+        sourceType = j.getString("sourceType"), sourceId = if (!j.isNull("sourceId")) j.getLong("sourceId") else null,
+        description = j.optString("description", ""), notes = j.optString("notes", ""),
         halKhataPeriodId = j.optLong("halKhataPeriodId", 1L), isReversed = j.optBoolean("isReversed", false),
         createdAt = j.getLong("createdAt")
     )
@@ -615,13 +1084,13 @@ class BackupManager(
 
     private fun jsonToPeriod(j: JSONObject) = HalKhataPeriodEntity(
         id = j.getLong("id"), name = j.getString("name"), description = j.optString("description", ""),
-        startDate = j.getLong("startDate"), endDate = if (j.has("endDate")) j.getLong("endDate") else null,
+        startDate = j.getLong("startDate"), endDate = if (!j.isNull("endDate")) j.getLong("endDate") else null,
         status = j.optString("status", HalKhataStatus.ACTIVE),
         totalSalesPaisa = j.optLong("totalSalesPaisa", 0L), totalCreditPaisa = j.optLong("totalCreditPaisa", 0L),
         totalPaymentsPaisa = j.optLong("totalPaymentsPaisa", 0L), totalClosingDebtPaisa = j.optLong("totalClosingDebtPaisa", 0L),
-        closedAt = if (j.has("closedAt")) j.getLong("closedAt") else null,
+        closedAt = if (!j.isNull("closedAt")) j.getLong("closedAt") else null,
         archivePdfPath = j.optString("archivePdfPath", ""), archiveBackupPath = j.optString("archiveBackupPath", ""),
-        backupVerified = j.optBoolean("backupVerified", false), createdAt = j.optLong("createdAt")
+        backupVerified = j.optBoolean("backupVerified", false), createdAt = j.optLong("createdAt", System.currentTimeMillis())
     )
 
     private fun balanceToJson(b: HalKhataCustomerBalanceEntity) = JSONObject().apply {
@@ -653,9 +1122,10 @@ class BackupManager(
         address = j.optString("address", ""), mobile = j.optString("mobile", ""),
         notes = j.optString("notes", ""), totalCreditPaisa = j.optLong("totalCreditPaisa", 0L),
         totalPaidPaisa = j.optLong("totalPaidPaisa", 0L), outstandingPaisa = j.optLong("outstandingPaisa", 0L),
-        convertedCustomerId = if (j.has("convertedCustomerId")) j.getLong("convertedCustomerId") else null,
+        convertedCustomerId = if (!j.isNull("convertedCustomerId")) j.getLong("convertedCustomerId") else null,
         isConverted = j.optBoolean("isConverted", false),
-        createdAt = j.optLong("createdAt"), updatedAt = j.optLong("updatedAt")
+        createdAt = j.optLong("createdAt", System.currentTimeMillis()),
+        updatedAt = j.optLong("updatedAt", System.currentTimeMillis())
     )
 
     private fun tempMemoToJson(m: TemporaryMemoEntity) = JSONObject().apply {
@@ -667,7 +1137,7 @@ class BackupManager(
 
     private fun jsonToTempMemo(j: JSONObject) = TemporaryMemoEntity(
         id = j.getLong("id"), tempCustomerId = j.getLong("tempCustomerId"), memoNumber = j.getString("memoNumber"),
-        type = j.getString("type"), description = j.getString("description"), itemsJson = j.optString("itemsJson", ""),
+        type = j.getString("type"), description = j.optString("description", ""), itemsJson = j.optString("itemsJson", ""),
         totalAmountPaisa = j.getLong("totalAmountPaisa"), paidPaisa = j.getLong("paidPaisa"),
         creditPaisa = j.getLong("creditPaisa"), notes = j.optString("notes", ""), createdAt = j.getLong("createdAt")
     )
@@ -688,9 +1158,9 @@ class BackupManager(
         entityId = j.getLong("entityId"), actionType = j.getString("actionType"),
         previousValueJson = j.optString("previousValueJson", ""), newValueJson = j.optString("newValueJson", ""),
         reason = j.optString("reason", ""),
-        relatedCustomerId = if (j.has("relatedCustomerId")) j.getLong("relatedCustomerId") else null,
-        relatedMemoId = if (j.has("relatedMemoId")) j.getLong("relatedMemoId") else null,
-        relatedPaymentId = if (j.has("relatedPaymentId")) j.getLong("relatedPaymentId") else null,
+        relatedCustomerId = if (!j.isNull("relatedCustomerId")) j.getLong("relatedCustomerId") else null,
+        relatedMemoId = if (!j.isNull("relatedMemoId")) j.getLong("relatedMemoId") else null,
+        relatedPaymentId = if (!j.isNull("relatedPaymentId")) j.getLong("relatedPaymentId") else null,
         createdAt = j.optLong("createdAt", System.currentTimeMillis())
     )
 
@@ -698,6 +1168,7 @@ class BackupManager(
 
     companion object {
         private const val WORK_NAME = "bakir_khata_auto_backup"
+        private const val COMPACT_CODE_PREFIX = "BK1:"
 
         fun scheduleAutoBackup(context: Context, frequency: String) {
             try {
@@ -727,6 +1198,7 @@ class AutoBackupWorker(
 
     override suspend fun doWork(): Result {
         val db = BakirKhataDatabase.getInstance(appContext)
+        runCatching { AccountingRepository(db).purgeRecordsOlderThanTwoYears() }
         val manager = BackupManager(appContext, db)
         val res = manager.createZipBackup(backupType = "AUTO")
         if (res is OperationResult.Error) {

@@ -49,7 +49,7 @@ fun TempCustomersScreen(
         topBar = {
             BakirKhataTopBar(
                 title = if (selectedTemp != null) "অস্থায়ী: ${selectedTemp.name}" else "অস্থায়ী কাস্টমার খাতা",
-                subtitle = if (selectedTemp != null) "${selectedTemp.tempCode} • বকেয়া: ${CurrencyUtils.formatBdt(selectedTemp.outstandingPaisa, cur)}"
+                subtitle = if (selectedTemp != null) "বকেয়া: ${CurrencyUtils.formatBdt(selectedTemp.outstandingPaisa, cur)}"
                 else "মোট অস্থায়ী বকেয়া: ${CurrencyUtils.formatBdt(tempCustomers.filter { !it.isConverted }.sumOf { it.outstandingPaisa }, cur)}",
                 onBack = {
                     if (selectedTemp != null) selectedTempId = null else onBack()
@@ -57,7 +57,11 @@ fun TempCustomersScreen(
                 actions = {
                     if (selectedTemp == null && tempCustomers.isNotEmpty()) {
                         IconButton(onClick = {
-                            previewPdfFile = pdfGenerator.generateTempCustomerReportPdf(tempCustomers, settings)
+                            try {
+                                previewPdfFile = pdfGenerator.generateTempCustomerReportPdf(tempCustomers, settings)
+                            } catch (e: Exception) {
+                                onMessage("পিডিএফ তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                            }
                         }) {
                             Icon(Icons.Default.PictureAsPdf, contentDescription = "পিডিএফ")
                         }
@@ -107,10 +111,7 @@ fun TempCustomersScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                        Text(t.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                        Text(t.tempCode, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
+                                    Text(t.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                                     if (t.address.isNotBlank()) Text(t.address, style = MaterialTheme.typography.bodySmall)
                                     if (t.isConverted) {
                                         Text("স্থায়ী কাস্টমারে রূপান্তরিত", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
@@ -176,10 +177,11 @@ fun TempCustomersScreen(
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
                     ) {
                         Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text(tm.memoNumber, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                                Text(CurrencyUtils.formatDateTimeBn(tm.createdAt), style = MaterialTheme.typography.labelSmall)
-                            }
+                            Text(
+                                text = CurrencyUtils.formatDateTimeBn(tm.createdAt),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                             Text(tm.description, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                             Text("মোট: ${CurrencyUtils.formatBdt(tm.totalAmountPaisa, cur)} • জমা: ${CurrencyUtils.formatBdt(tm.paidPaisa, cur)} • বাকি: ${CurrencyUtils.formatBdt(tm.creditPaisa, cur)}")
                         }

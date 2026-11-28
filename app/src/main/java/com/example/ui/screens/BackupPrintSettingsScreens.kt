@@ -1,7 +1,9 @@
 package com.example.ui.screens
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -16,10 +18,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.local.*
 import com.example.domain.*
@@ -101,8 +106,12 @@ fun PrintPdfCenterScreen(
                         onMessage("কোনো কাস্টমার নেই")
                     } else {
                         scope.launch {
-                            val zip = onGenerateCustomersZip(customers, "all_customers_ledgers.zip")
-                            previewFile = zip to "সকল কাস্টমার লেজার (ZIP)"
+                            try {
+                                val zip = onGenerateCustomersZip(customers, "all_customers_ledgers.zip")
+                                previewFile = zip to "সকল কাস্টমার লেজার (ZIP)"
+                            } catch (e: Exception) {
+                                onMessage("পিডিএফ ZIP তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                            }
                         }
                     }
                 }
@@ -118,8 +127,12 @@ fun PrintPdfCenterScreen(
                         onMessage("কোনো বকেয়া কাস্টমার নেই")
                     } else {
                         scope.launch {
-                            val zip = onGenerateCustomersZip(debtors, "debt_customers_ledgers.zip")
-                            previewFile = zip to "বকেয়া কাস্টমারদের লেজার (ZIP)"
+                            try {
+                                val zip = onGenerateCustomersZip(debtors, "debt_customers_ledgers.zip")
+                                previewFile = zip to "বকেয়া কাস্টমারদের লেজার (ZIP)"
+                            } catch (e: Exception) {
+                                onMessage("পিডিএফ ZIP তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                            }
                         }
                     }
                 }
@@ -130,8 +143,12 @@ fun PrintPdfCenterScreen(
                     subtitle = "এক নজরে সকল কাস্টমার ও বকেয়ার তালিকা",
                     icon = Icons.Default.Groups
                 ) {
-                    val f = pdfGenerator.generateCustomerListPdf("কাস্টমার বকেয়া তালিকা", customers, settings)
-                    previewFile = f to "কাস্টমার তালিকা"
+                    try {
+                        val f = pdfGenerator.generateCustomerListPdf("কাস্টমার বকেয়া তালিকা", customers, settings)
+                        previewFile = f to "কাস্টমার তালিকা"
+                    } catch (e: Exception) {
+                        onMessage("পিডিএফ তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                    }
                 }
             }
 
@@ -145,8 +162,12 @@ fun PrintPdfCenterScreen(
                     subtitle = "আজকের ক্যাশ, বিক্রি, জমা ও খরচের সম্পূর্ণ বিবরণ",
                     icon = Icons.Default.Today
                 ) {
-                    val rep = buildDailyReport(System.currentTimeMillis())
-                    previewFile = pdfGenerator.generateDailyReportPdf(rep, settings) to "দৈনিক রিপোর্ট"
+                    try {
+                        val rep = buildDailyReport(System.currentTimeMillis())
+                        previewFile = pdfGenerator.generateDailyReportPdf(rep, settings) to "দৈনিক রিপোর্ট"
+                    } catch (e: Exception) {
+                        onMessage("পিডিএফ তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                    }
                 }
             }
             item {
@@ -155,12 +176,16 @@ fun PrintPdfCenterScreen(
                     subtitle = "মাসিক বিক্রি, বাকি, জমা ও খরচের সারসংক্ষেপ",
                     icon = Icons.Default.Assessment
                 ) {
-                    val cal = java.util.Calendar.getInstance()
-                    val rep = buildPeriodReport(
-                        CurrencyUtils.startOfMonthMillis(cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH)),
-                        CurrencyUtils.endOfMonthMillis(cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH))
-                    )
-                    previewFile = pdfGenerator.generatePeriodReportPdf("মাসিক হিসাব রিপোর্ট", rep, settings) to "মাসিক রিপোর্ট"
+                    try {
+                        val cal = java.util.Calendar.getInstance()
+                        val rep = buildPeriodReport(
+                            CurrencyUtils.startOfMonthMillis(cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH)),
+                            CurrencyUtils.endOfMonthMillis(cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH))
+                        )
+                        previewFile = pdfGenerator.generatePeriodReportPdf("মাসিক হিসাব রিপোর্ট", rep, settings) to "মাসিক রিপোর্ট"
+                    } catch (e: Exception) {
+                        onMessage("পিডিএফ তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                    }
                 }
             }
             item {
@@ -169,7 +194,11 @@ fun PrintPdfCenterScreen(
                     subtitle = "নগদ আগমন, নির্গমন ও প্রত্যাশিত ব্যালেন্স",
                     icon = Icons.Default.AccountBalanceWallet
                 ) {
-                    previewFile = pdfGenerator.generateCashboxReportPdf(cashboxSummary, cashboxTransactions, settings) to "ক্যাশবক্স রিপোর্ট"
+                    try {
+                        previewFile = pdfGenerator.generateCashboxReportPdf(cashboxSummary, cashboxTransactions, settings) to "ক্যাশবক্স রিপোর্ট"
+                    } catch (e: Exception) {
+                        onMessage("পিডিএফ তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                    }
                 }
             }
             item {
@@ -178,7 +207,11 @@ fun PrintPdfCenterScreen(
                     subtitle = "দোকানের সকল খরচের খাতভিত্তিক তালিকা",
                     icon = Icons.Default.Receipt
                 ) {
-                    previewFile = pdfGenerator.generateExpenseReportPdf(expenses, settings) to "খরচের রিপোর্ট"
+                    try {
+                        previewFile = pdfGenerator.generateExpenseReportPdf(expenses, settings) to "খরচের রিপোর্ট"
+                    } catch (e: Exception) {
+                        onMessage("পিডিএফ তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                    }
                 }
             }
             item {
@@ -187,16 +220,24 @@ fun PrintPdfCenterScreen(
                     subtitle = "অস্থায়ী কাস্টমারদের বকেয়া ও অবস্থা",
                     icon = Icons.Default.Badge
                 ) {
-                    previewFile = pdfGenerator.generateTempCustomerReportPdf(tempCustomers, settings) to "অস্থায়ী খাতা রিপোর্ট"
+                    try {
+                        previewFile = pdfGenerator.generateTempCustomerReportPdf(tempCustomers, settings) to "অস্থায়ী খাতা রিপোর্ট"
+                    } catch (e: Exception) {
+                        onMessage("পিডিএফ তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                    }
                 }
             }
             item {
                 PdfOptionCard(
                     title = "সম্পূর্ণ দোকানের লেনদেন ইতিহাস পিডিএফ",
-                    subtitle = "মেমো, জমা ও সার্বিক দোকানের সম্পূর্ণ ইতিহাস",
+                    subtitle = "জমা, বাকি ও সার্বিক দোকানের সম্পূর্ণ ইতিহাস",
                     icon = Icons.Default.HistoryEdu
                 ) {
-                    previewFile = pdfGenerator.generateFullShopHistoryPdf(customers, memos, payments, expenses, settings) to "সম্পূর্ণ দোকান ইতিহাস"
+                    try {
+                        previewFile = pdfGenerator.generateFullShopHistoryPdf(customers, memos, payments, expenses, settings) to "সম্পূর্ণ দোকান ইতিহাস"
+                    } catch (e: Exception) {
+                        onMessage("পিডিএফ তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                    }
                 }
             }
         }
@@ -211,11 +252,14 @@ fun PrintPdfCenterScreen(
             onSelect = { c ->
                 showSingleCustomerPicker = false
                 scope.launch {
-                    val file = onGenerateSingleCustomerPdf(c)
-                    previewFile = file to "লেজার: ${c.name}"
+                    try {
+                        val file = onGenerateSingleCustomerPdf(c)
+                        previewFile = file to "খাতা: ${c.name}"
+                    } catch (e: Exception) {
+                        onMessage("পিডিএফ তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                    }
                 }
-            },
-            onRequestCreateCustomer = { showSingleCustomerPicker = false }
+            }
         )
     }
 
@@ -243,7 +287,13 @@ fun PrintPdfCenterScreen(
                             )
                             Column {
                                 Text(c.name, fontWeight = FontWeight.Bold)
-                                Text("${c.customerCode} • ${CurrencyUtils.formatBdt(c.currentBalancePaisa, settings.currencySymbol)}", style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    listOfNotNull(
+                                        c.address.takeIf { it.isNotBlank() },
+                                        CurrencyUtils.formatBdt(c.currentBalancePaisa, settings.currencySymbol)
+                                    ).joinToString(" • "),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
                             }
                         }
                     }
@@ -258,8 +308,12 @@ fun PrintPdfCenterScreen(
                         } else {
                             showMultiCustomerDialog = false
                             scope.launch {
-                                val zip = onGenerateCustomersZip(chosen, "selected_customers_ledgers.zip")
-                                previewFile = zip to "নির্বাচিত কাস্টমার লেজার (ZIP)"
+                                try {
+                                    val zip = onGenerateCustomersZip(chosen, "selected_customers_ledgers.zip")
+                                    previewFile = zip to "নির্বাচিত কাস্টমার লেজার (ZIP)"
+                                } catch (e: Exception) {
+                                    onMessage("ZIP তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                                }
                             }
                         }
                     }
@@ -313,6 +367,27 @@ private fun PdfOptionCard(
 
 // region Backup & Restore Screen
 
+private sealed class RestoreTarget {
+    data class FromUri(val uri: Uri) : RestoreTarget()
+    data class FromFile(val file: File) : RestoreTarget()
+    data class FromCode(val code: String) : RestoreTarget()
+}
+
+private fun resolveUriDisplayName(context: Context, uri: Uri): String {
+    try {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0) {
+                    val name = cursor.getString(idx)
+                    if (!name.isNullOrBlank()) return name
+                }
+            }
+        }
+    } catch (_: Exception) { }
+    return uri.lastPathSegment ?: "backup.zip"
+}
+
 @Composable
 fun BackupRestoreScreen(
     backupHistory: List<BackupMetadataEntity>,
@@ -325,12 +400,21 @@ fun BackupRestoreScreen(
     onSetBackupFrequency: (String) -> Unit,
     onPreviewBackupUri: (Uri, String, (OperationResult<BackupPreviewInfo>) -> Unit) -> Unit,
     onRestoreFromUri: (Uri, String, (Boolean) -> Unit) -> Unit,
+    onPreviewBackupFile: (File, (OperationResult<BackupPreviewInfo>) -> Unit) -> Unit = { _, _ -> },
+    onRestoreFromFile: (File, (Boolean) -> Unit) -> Unit = { _, _ -> },
+    onCreateCompactCode: ((OperationResult<String>) -> Unit) -> Unit = {},
+    onPreviewCompactCode: (String, (OperationResult<BackupPreviewInfo>) -> Unit) -> Unit = { _, _ -> },
+    onRestoreFromCompactCode: (String, (Boolean) -> Unit) -> Unit = { _, _ -> },
     onMessage: (String) -> Unit,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     var latestCreatedBackup by remember { mutableStateOf<BackupMetadataEntity?>(null) }
-    var pendingRestore by remember { mutableStateOf<Pair<Uri, BackupPreviewInfo>?>(null) }
+    var pendingExportFile by remember { mutableStateOf<File?>(null) }
+    var pendingRestore by remember { mutableStateOf<Pair<RestoreTarget, BackupPreviewInfo>?>(null) }
+    var generatedCode by remember { mutableStateOf<String?>(null) }
+    var pasteCodeInput by remember { mutableStateOf("") }
 
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -350,10 +434,10 @@ fun BackupRestoreScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            val fileName = uri.lastPathSegment ?: "backup.zip"
+            val fileName = resolveUriDisplayName(context, uri)
             onPreviewBackupUri(uri, fileName) { res ->
                 when (res) {
-                    is OperationResult.Success -> pendingRestore = uri to res.data
+                    is OperationResult.Success -> pendingRestore = RestoreTarget.FromUri(uri) to res.data
                     is OperationResult.Error -> onMessage(res.messageBn)
                 }
             }
@@ -363,7 +447,8 @@ fun BackupRestoreScreen(
     val saveFilePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { destUri ->
-        val src = latestCreatedBackup?.let { File(it.filePath) }
+        val src = pendingExportFile ?: latestCreatedBackup?.let { File(it.filePath) }
+        pendingExportFile = null
         if (destUri != null && src != null && src.exists()) {
             val ok = backupManager.copyFileToUri(src, destUri)
             onMessage(if (ok) "নির্বাচিত স্থানে ব্যাকআপ সংরক্ষিত হয়েছে" else "ফাইল সংরক্ষণ ব্যর্থ হয়েছে")
@@ -374,7 +459,7 @@ fun BackupRestoreScreen(
         topBar = {
             BakirKhataTopBar(
                 title = "ব্যাকআপ ও রিস্টোর",
-                subtitle = "আপনার দোকানের বছরের পর বছরের হিসাব সুরক্ষা",
+                subtitle = "আপনার দোকানের হিসাব সুরক্ষা (২ বছর পর্যন্ত বিস্তারিত হিসাব সংরক্ষিত থাকে)",
                 onBack = onBack
             )
         }
@@ -435,7 +520,10 @@ fun BackupRestoreScreen(
                             if (meta.status == "SUCCESS") {
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     OutlinedButton(
-                                        onClick = { saveFilePickerLauncher.launch(meta.fileName) },
+                                        onClick = {
+                                            pendingExportFile = File(meta.filePath)
+                                            saveFilePickerLauncher.launch(meta.fileName)
+                                        },
                                         modifier = Modifier.weight(1f)
                                     ) {
                                         Icon(Icons.Default.SaveAlt, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -444,7 +532,11 @@ fun BackupRestoreScreen(
                                     }
                                     OutlinedButton(
                                         onClick = {
-                                            pdfGenerator.shareFile(context, File(meta.filePath), "application/octet-stream", meta.fileName)
+                                            try {
+                                                pdfGenerator.shareFile(context, File(meta.filePath), "application/octet-stream", meta.fileName)
+                                            } catch (e: Exception) {
+                                                onMessage("শেয়ার করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                                            }
                                         },
                                         modifier = Modifier.weight(1f)
                                     ) {
@@ -454,6 +546,111 @@ fun BackupRestoreScreen(
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            // Compact Backup Code Section (for WhatsApp / Note / Phone-to-Phone recovery)
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
+                ) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("ব্যাকআপ কোড তৈরি ও রিস্টোর (কোড কপি করে রাখুন)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            "ফোন নষ্ট বা হারালে যেন সহজে ফিরে পান: এই একটি টেক্সট কোডে আপনার পুরো খাতা সংকুচিত হয়ে থাকে। কোড কপি করে নিজের হোয়াটসঅ্যাপ/নোটে সেভ রাখুন, যেকোনো ফোনে পেস্ট করলেই সম্পূর্ণ হিসাব ফিরে আসবে।",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Button(
+                            onClick = {
+                                onCreateCompactCode { res ->
+                                    if (res is OperationResult.Success) {
+                                        generatedCode = res.data
+                                    }
+                                }
+                            },
+                            enabled = !isSubmitting,
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        ) {
+                            Icon(Icons.Default.QrCode2, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("ব্যাকআপ কোড তৈরি করুন")
+                        }
+
+                        generatedCode?.let { code ->
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = code,
+                                    maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    onClick = {
+                                        clipboardManager.setText(AnnotatedString(code))
+                                        onMessage("ব্যাকআপ কোড কপি হয়েছে — নিরাপদ জায়গায় পেস্ট করে রাখুন")
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("কপি করুন")
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        try {
+                                            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                                type = "text/plain"
+                                                putExtra(Intent.EXTRA_TEXT, code)
+                                            }
+                                            context.startActivity(Intent.createChooser(sendIntent, "ব্যাকআপ কোড পাঠান"))
+                                        } catch (e: Exception) {
+                                            onMessage("শেয়ার করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("শেয়ার করুন")
+                                }
+                            }
+                        }
+
+                        HorizontalDivider()
+
+                        OutlinedTextField(
+                            value = pasteCodeInput,
+                            onValueChange = { pasteCodeInput = it },
+                            label = { Text("ব্যাকআপ কোড (BK1:...) এখানে পেস্ট করুন") },
+                            maxLines = 3,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedButton(
+                            onClick = {
+                                onPreviewCompactCode(pasteCodeInput) { res ->
+                                    when (res) {
+                                        is OperationResult.Success -> pendingRestore = RestoreTarget.FromCode(pasteCodeInput) to res.data
+                                        is OperationResult.Error -> onMessage(res.messageBn)
+                                    }
+                                }
+                            },
+                            enabled = !isSubmitting && pasteCodeInput.isNotBlank(),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                        ) {
+                            Icon(Icons.Default.RestorePage, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("কোড যাচাই ও রিস্টোর করুন")
                         }
                     }
                 }
@@ -495,15 +692,15 @@ fun BackupRestoreScreen(
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f))
                 ) {
                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("ব্যাকআপ থেকে পুনরুদ্ধার (Restore Backup)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("ব্যাকআপ ফাইল থেকে পুনরুদ্ধার (Restore File)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text(
-                            "নতুন ফোনে বা রিসেটের পর পূর্বের ZIP বা JSON ব্যাকআপ ফাইল নির্বাচন করে সম্পূর্ণ হিসাব পুনরুদ্ধার করুন। রিস্টোরের পূর্বে ব্যাকআপ যাচাই ও প্রিভিউ দেখানো হবে।",
+                            "নতুন ফোনে বা রিসেটের পর পূর্বের ZIP, JSON বা .db ব্যাকআপ ফাইল নির্বাচন করে সম্পূর্ণ হিসাব পুনরুদ্ধার করুন। রিস্টোরের পূর্বে ব্যাকআপ যাচাই ও প্রিভিউ দেখানো হবে।",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Button(
                             onClick = {
-                                restoreFilePickerLauncher.launch(arrayOf("application/zip", "application/json", "*/*"))
+                                restoreFilePickerLauncher.launch(arrayOf("application/zip", "application/json", "application/octet-stream", "*/*"))
                             },
                             enabled = !isSubmitting,
                             modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp).testTag("restore_backup_button")
@@ -516,32 +713,65 @@ fun BackupRestoreScreen(
                 }
             }
 
-            // Backup History
+            // Backup History (with direct 1-tap restore)
             item {
-                Text("ব্যাকআপের ইতিহাস", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("ব্যাকআপের ইতিহাস (এক ট্যাপে রিস্টোর)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             }
             items(backupHistory, key = { it.id }) { b ->
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
                 ) {
-                    Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(b.fileName, fontWeight = FontWeight.Bold)
-                            Text("${b.backupType} • ${CurrencyUtils.formatDateTimeBn(b.createdAt)}", style = MaterialTheme.typography.labelSmall)
-                            if (b.errorMessage.isNotBlank()) {
-                                Text(b.errorMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    Column(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(b.fileName, fontWeight = FontWeight.Bold)
+                                Text("${b.backupType} • ${CurrencyUtils.formatDateTimeBn(b.createdAt)}", style = MaterialTheme.typography.labelSmall)
+                                if (b.errorMessage.isNotBlank()) {
+                                    Text(b.errorMessage, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                                }
                             }
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = if (b.status == "SUCCESS") "সফল" else "ব্যর্থ",
                                 color = if (b.status == "SUCCESS") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                                 fontWeight = FontWeight.Bold
                             )
-                            if (b.status == "SUCCESS" && b.filePath.isNotBlank() && File(b.filePath).exists()) {
+                        }
+                        if (b.status == "SUCCESS" && b.filePath.isNotBlank() && File(b.filePath).exists()) {
+                            val file = File(b.filePath)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        onPreviewBackupFile(file) { res ->
+                                            when (res) {
+                                                is OperationResult.Success -> pendingRestore = RestoreTarget.FromFile(file) to res.data
+                                                is OperationResult.Error -> onMessage(res.messageBn)
+                                            }
+                                        }
+                                    },
+                                    enabled = !isSubmitting,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.Restore, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("রিস্টোর")
+                                }
                                 IconButton(onClick = {
-                                    pdfGenerator.shareFile(context, File(b.filePath), "application/octet-stream", b.fileName)
+                                    pendingExportFile = file
+                                    saveFilePickerLauncher.launch(b.fileName)
+                                }) {
+                                    Icon(Icons.Default.SaveAlt, contentDescription = "ফোল্ডারে সেভ")
+                                }
+                                IconButton(onClick = {
+                                    try {
+                                        pdfGenerator.shareFile(context, file, "application/octet-stream", b.fileName)
+                                    } catch (e: Exception) {
+                                        onMessage("শেয়ার করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                                    }
                                 }) {
                                     Icon(Icons.Default.Share, contentDescription = "শেয়ার")
                                 }
@@ -553,7 +783,7 @@ fun BackupRestoreScreen(
         }
     }
 
-    pendingRestore?.let { (uri, preview) ->
+    pendingRestore?.let { (target, preview) ->
         AlertDialog(
             onDismissRequest = { pendingRestore = null },
             title = { Text("ব্যাকআপ প্রিভিউ ও নিশ্চিতকরণ") },
@@ -563,7 +793,7 @@ fun BackupRestoreScreen(
                     Text("ব্যাকআপ তারিখ: ${CurrencyUtils.formatDateTimeBn(preview.createdAt)}")
                     Text("ফরম্যাট: ${preview.formatLabel}")
                     Text("কাস্টমার: ${CurrencyUtils.toBengaliDigits(preview.customerCount.toString())} জন")
-                    Text("মেমো: ${CurrencyUtils.toBengaliDigits(preview.memoCount.toString())} টি")
+                    Text("হিসাব / মেমো: ${CurrencyUtils.toBengaliDigits(preview.memoCount.toString())} টি")
                     Text("জমা: ${CurrencyUtils.toBengaliDigits(preview.paymentCount.toString())} টি")
                     Text("মোট বকেয়া: ${CurrencyUtils.formatBdt(preview.totalOutstandingDebtPaisa, settings.currencySymbol)}")
                     Text(
@@ -582,8 +812,19 @@ fun BackupRestoreScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        onRestoreFromUri(uri, preview.fileName) {
-                            pendingRestore = null
+                        when (target) {
+                            is RestoreTarget.FromUri -> onRestoreFromUri(target.uri, preview.fileName) { ok ->
+                                if (ok) pendingRestore = null
+                            }
+                            is RestoreTarget.FromFile -> onRestoreFromFile(target.file) { ok ->
+                                if (ok) pendingRestore = null
+                            }
+                            is RestoreTarget.FromCode -> onRestoreFromCompactCode(target.code) { ok ->
+                                if (ok) {
+                                    pendingRestore = null
+                                    pasteCodeInput = ""
+                                }
+                            }
                         }
                     },
                     enabled = preview.checksumValid && !isSubmitting

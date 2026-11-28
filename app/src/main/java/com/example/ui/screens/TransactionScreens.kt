@@ -40,7 +40,6 @@ fun QuickPaymentScreen(
     settings: AppSettingsEntity,
     isSubmitting: Boolean,
     pdfGenerator: PdfGenerator,
-    onCreateCustomerInline: (String, String, String, String, String, Long, (CustomerEntity) -> Unit) -> Unit,
     onConfirmPayment: (customerId: Long, amountPaisa: Long, notes: String, requestToken: String, onSuccess: (PaymentEntity) -> Unit) -> Unit,
     onMessage: (String) -> Unit,
     onBack: () -> Unit
@@ -54,7 +53,6 @@ fun QuickPaymentScreen(
     var notes by remember { mutableStateOf("") }
     var requestToken by remember { mutableStateOf(UUID.randomUUID().toString()) }
     var showPicker by remember { mutableStateOf(false) }
-    var showQuickCreate by remember { mutableStateOf(false) }
     var completedReceipt by remember { mutableStateOf<Pair<CustomerEntity, PaymentEntity>?>(null) }
     var previewPdfFile by remember { mutableStateOf<File?>(null) }
 
@@ -97,21 +95,12 @@ fun QuickPaymentScreen(
                         if (selectedCustomer == null) {
                             Text("কাস্টমার বাছাই করতে ট্যাপ করুন", style = MaterialTheme.typography.titleMedium)
                         } else {
-                            Text("${selectedCustomer.name} (${selectedCustomer.customerCode})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(selectedCustomer.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                             Text(selectedCustomer.address, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     Icon(Icons.Default.ArrowDropDown, contentDescription = null)
                 }
-            }
-
-            OutlinedButton(
-                onClick = { showQuickCreate = true },
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
-            ) {
-                Icon(Icons.Default.PersonAdd, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("নতুন কাস্টমার যোগ করে এখানে ফিরুন")
             }
 
             if (selectedCustomer != null) {
@@ -230,23 +219,6 @@ fun QuickPaymentScreen(
             onSelect = {
                 selectedCustomerId = it.id
                 showPicker = false
-            },
-            onRequestCreateCustomer = {
-                showPicker = false
-                showQuickCreate = true
-            }
-        )
-    }
-
-    if (showQuickCreate) {
-        QuickCreateCustomerDialog(
-            showOpeningBalance = true,
-            onDismiss = { showQuickCreate = false },
-            onCreate = { name, addr, mob, nick, cNotes, opening ->
-                onCreateCustomerInline(name, addr, mob, nick, cNotes, opening) { created ->
-                    selectedCustomerId = created.id
-                    showQuickCreate = false
-                }
             }
         )
     }
@@ -254,10 +226,10 @@ fun QuickPaymentScreen(
     completedReceipt?.let { (cust, pay) ->
         AlertDialog(
             onDismissRequest = { completedReceipt = null },
-            title = { Text("পেমেন্ট রসিদ (${pay.receiptNumber})") },
+            title = { Text("জমা রসিদ") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("কাস্টমার: ${cust.name} (${cust.customerCode})", fontWeight = FontWeight.Bold)
+                    Text("কাস্টমার: ${cust.name}", fontWeight = FontWeight.Bold)
                     Text("পূর্বের বকেয়া: ${CurrencyUtils.formatBdt(pay.previousBalancePaisa, cur)}")
                     Text("জমা গ্রহণ: ${CurrencyUtils.formatBdt(pay.amountPaisa, cur)}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                     Text("অবশিষ্ট বকেয়া: ${CurrencyUtils.formatBdt(pay.newBalancePaisa, cur)}", fontWeight = FontWeight.Bold)
@@ -266,17 +238,25 @@ fun QuickPaymentScreen(
             },
             confirmButton = {
                 Button(onClick = {
-                    val file = pdfGenerator.generatePaymentReceiptPdf(cust, pay, settings)
-                    previewPdfFile = file
-                    completedReceipt = null
+                    try {
+                        val file = pdfGenerator.generatePaymentReceiptPdf(cust, pay, settings)
+                        previewPdfFile = file
+                        completedReceipt = null
+                    } catch (e: Exception) {
+                        onMessage("রসিদ পিডিএফ তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                    }
                 }) {
                     Text("পিডিএফ / প্রিন্ট / শেয়ার")
                 }
             },
             dismissButton = {
                 TextButton(onClick = {
-                    val file = pdfGenerator.generatePaymentReceiptPdf(cust, pay, settings)
-                    pdfGenerator.printPdfFile(context, file, "রসিদ_${pay.receiptNumber}")
+                    try {
+                        val file = pdfGenerator.generatePaymentReceiptPdf(cust, pay, settings)
+                        pdfGenerator.printPdfFile(context, file, "জমা_রসিদ_${cust.name}")
+                    } catch (e: Exception) {
+                        onMessage("প্রিন্ট করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                    }
                 }) {
                     Text("সরাসরি প্রিন্ট")
                 }
@@ -356,21 +336,12 @@ fun QuickCreditScreen(
                         if (selectedCustomer == null) {
                             Text("কাস্টমার বাছাই করতে ট্যাপ করুন", style = MaterialTheme.typography.titleMedium)
                         } else {
-                            Text("${selectedCustomer.name} (${selectedCustomer.customerCode})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(selectedCustomer.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                             Text(selectedCustomer.address, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     Icon(Icons.Default.ArrowDropDown, contentDescription = null)
                 }
-            }
-
-            OutlinedButton(
-                onClick = { showQuickCreate = true },
-                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
-            ) {
-                Icon(Icons.Default.PersonAdd, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("নতুন কাস্টমার যোগ করে এখানে ফিরুন")
             }
 
             if (selectedCustomer != null) {
@@ -522,13 +493,14 @@ fun SalesMemoScreen(
         listOf("কেজি", "গ্রাম", "লিটার", "মিলি", "পিস", "বস্তা", "প্যাকেট", "ডজন", "বোতল") + customUnits
     }
 
-    var saleType by remember { mutableStateOf(if (initialCustomerId != null) SaleType.CREDIT else SaleType.CASH) }
     var selectedCustomerId by remember(initialCustomerId) { mutableStateOf(initialCustomerId) }
     val selectedCustomer = remember(customers, selectedCustomerId) { customers.find { it.id == selectedCustomerId } }
     var walkInName by remember { mutableStateOf("নগদ ক্রেতা") }
     var walkInAddress by remember { mutableStateOf("") }
 
     var items by remember { mutableStateOf<List<MemoLineDraft>>(emptyList()) }
+    var directBillAmountText by remember { mutableStateOf("") }
+    var showItemizedBuilder by remember { mutableStateOf(false) }
     var productName by remember { mutableStateOf("") }
     var quantityText by remember { mutableStateOf("1") }
     var selectedUnit by remember { mutableStateOf("কেজি") }
@@ -547,21 +519,28 @@ fun SalesMemoScreen(
     var createdMemo by remember { mutableStateOf<MemoWithItems?>(null) }
     var previewPdfFile by remember { mutableStateOf<File?>(null) }
 
-    val subtotalPaisa = remember(items) { items.sumOf { it.lineTotalPaisa } }
+    val directAmountPaisa = remember(directBillAmountText) { CurrencyUtils.parseBdtToPaisa(directBillAmountText) ?: 0L }
+    val subtotalPaisa = remember(items, directAmountPaisa) {
+        if (items.isNotEmpty()) items.sumOf { it.lineTotalPaisa } else directAmountPaisa
+    }
     val discountPaisa = remember(discountText) { CurrencyUtils.parseBdtToPaisa(discountText) ?: 0L }
     val grandTotalPaisa = (subtotalPaisa - discountPaisa).coerceAtLeast(0L)
-    val paidInputPaisa = remember(paidText) { CurrencyUtils.parseBdtToPaisa(paidText) ?: 0L }
-    val previewPaid = when (saleType) {
-        SaleType.CASH -> grandTotalPaisa
-        SaleType.CREDIT -> 0L
-        else -> paidInputPaisa.coerceIn(0L, grandTotalPaisa)
-    }
+    val parsedPaidPaisa = remember(paidText) { CurrencyUtils.parseBdtToPaisa(paidText) }
+    val paidInputPaisa = parsedPaidPaisa ?: 0L
+    val isOverPaid = grandTotalPaisa > 0L && paidInputPaisa > grandTotalPaisa
+    val previewPaid = paidInputPaisa.coerceIn(0L, grandTotalPaisa)
     val previewOutstanding = (grandTotalPaisa - previewPaid).coerceAtLeast(0L)
+    val derivedSaleType = when {
+        previewOutstanding == 0L -> SaleType.CASH
+        previewPaid == 0L -> SaleType.CREDIT
+        else -> SaleType.PARTIAL
+    }
+    val needsCustomerForDebt = previewOutstanding > 0L && selectedCustomer == null
 
     Scaffold(
         topBar = {
             BakirKhataTopBar(
-                title = "নতুন বিক্রয় মেমো",
+                title = "নতুন বিক্রয় ও বাকি হিসাব",
                 subtitle = CurrencyUtils.formatDateTimeBn(System.currentTimeMillis()),
                 onBack = onBack
             )
@@ -572,36 +551,18 @@ fun SalesMemoScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(bottom = 36.dp),
+            contentPadding = PaddingValues(top = 8.dp, bottom = 36.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Sale type selector
-            item {
-                Text("বিক্রয়ের ধরন", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(6.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val types = listOf(
-                        SaleType.CASH to "নগদ বিক্রি",
-                        SaleType.CREDIT to "বাকি বিক্রি",
-                        SaleType.PARTIAL to "আংশিক জমা"
-                    )
-                    types.forEach { (code, label) ->
-                        FilterChip(
-                            selected = saleType == code,
-                            onClick = { saleType = code },
-                            label = { Text(label) },
-                            modifier = Modifier.weight(1f).testTag("memo_type_$code")
-                        )
-                    }
-                }
-            }
-
-            // Customer picker
+            // Customer selector
             item {
                 Card(
-                    modifier = Modifier.fillMaxWidth().clickable { showCustomerPicker = true },
+                    modifier = Modifier.fillMaxWidth().clickable { showCustomerPicker = true }.testTag("memo_select_customer"),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+                    border = BorderStroke(
+                        1.dp,
+                        if (needsCustomerForDebt) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                    )
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(12.dp),
@@ -610,33 +571,35 @@ fun SalesMemoScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = if (saleType == SaleType.CASH) "কাস্টমার (ঐচ্ছিক)" else "কাস্টমার নির্বাচন করুন *",
+                                text = if (needsCustomerForDebt) "কাস্টমার নির্বাচন করুন (বাকি রাখার জন্য আবশ্যক) *" else "কাস্টমার (বাকি হলে আবশ্যক, নগদে ঐচ্ছিক)",
                                 style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = if (needsCustomerForDebt) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                             Text(
-                                text = selectedCustomer?.let { "${it.name} (${it.customerCode}) • বাকি: ${CurrencyUtils.formatBdt(it.currentBalancePaisa, cur)}" }
+                                text = selectedCustomer?.let { "${it.name} • পূর্বের বাকি: ${CurrencyUtils.formatBdt(it.currentBalancePaisa, cur)}" }
                                     ?: "ট্যাপ করে কাস্টমার বাছাই করুন",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
                             )
                         }
-                        if (selectedCustomer != null && saleType == SaleType.CASH) {
+                        if (selectedCustomer != null) {
                             IconButton(onClick = { selectedCustomerId = null }) {
                                 Icon(Icons.Default.Clear, contentDescription = "সরান")
                             }
                         } else {
-                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                            IconButton(onClick = { showQuickCreate = true }) {
+                                Icon(Icons.Default.PersonAdd, contentDescription = "নতুন কাস্টমার")
+                            }
                         }
                     }
                 }
-                if (selectedCustomer == null && saleType == SaleType.CASH) {
+                if (selectedCustomer == null) {
                     Spacer(Modifier.height(8.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
                             value = walkInName,
                             onValueChange = { walkInName = it },
-                            label = { Text("ক্রেতার নাম") },
+                            label = { Text("ক্রেতার নাম (নগদ হলে)") },
                             singleLine = true,
                             modifier = Modifier.weight(1f)
                         )
@@ -651,25 +614,61 @@ fun SalesMemoScreen(
                 }
             }
 
-            // Item builder card
-            item {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-                ) {
-                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            text = if (editingIndex != null) "পণ্য সম্পাদনা করুন" else "পণ্য যোগ করুন",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                        OutlinedTextField(
-                            value = productName,
-                            onValueChange = { productName = it },
-                            label = { Text("পণ্যের নাম *") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth().testTag("memo_product_input")
-                        )
+            // Simple direct bill amount entry (default) + optional itemized toggle
+            if (items.isEmpty()) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("সহজ হিসাব (মোট টাকা লিখুন)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            OutlinedTextField(
+                                value = directBillAmountText,
+                                onValueChange = { directBillAmountText = it },
+                                label = { Text("মোট বিলের পরিমাণ ($cur) *") },
+                                placeholder = { Text("মোট কত টাকার হিসাব?") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("memo_direct_amount_input")
+                            )
+                            TextButton(
+                                onClick = { showItemizedBuilder = !showItemizedBuilder },
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Icon(
+                                    if (showItemizedBuilder) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(if (showItemizedBuilder) "পণ্যের তালিকা লুকান" else "বিস্তারিত পণ্যের নাম লিখতে চাইলে এখানে চাপুন (ঐচ্ছিক)")
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Optional item builder card
+            if (showItemizedBuilder || items.isNotEmpty()) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                text = if (editingIndex != null) "মালের বিবরণ সম্পাদনা করুন" else "মালের বিবরণ যোগ করুন (ঐচ্ছিক)",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            OutlinedTextField(
+                                value = productName,
+                                onValueChange = { productName = it },
+                                label = { Text("পণ্যের নাম *") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("memo_product_input")
+                            )
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedTextField(
                                 value = quantityText,
@@ -775,6 +774,7 @@ fun SalesMemoScreen(
                     }
                 }
             }
+            }
 
             // Added items list
             itemsIndexed(items, key = { _, it -> it.localId }) { idx, item ->
@@ -818,14 +818,14 @@ fun SalesMemoScreen(
                 }
             }
 
-            // Totals, discount, paid, and submit
-            if (items.isNotEmpty()) {
+            // Totals, discount, "জমা দিল কত?", auto remaining debt & submit
+            if (subtotalPaisa > 0L || items.isNotEmpty()) {
                 item {
                     Card(
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f))
                     ) {
-                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text("সাবটোটাল:")
                                 Text(CurrencyUtils.formatBdt(subtotalPaisa, cur), fontWeight = FontWeight.Bold)
@@ -838,16 +838,70 @@ fun SalesMemoScreen(
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
-                            if (saleType == SaleType.PARTIAL) {
-                                OutlinedTextField(
-                                    value = paidText,
-                                    onValueChange = { paidText = it },
-                                    label = { Text("নগদ জমা ($cur) *") },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth().testTag("memo_partial_paid_input")
+
+                            Surface(
+                                shape = MaterialTheme.shapes.medium,
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("সর্বমোট বিল:", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        CurrencyUtils.formatBdt(grandTotalPaisa, cur),
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+
+                            OutlinedTextField(
+                                value = paidText,
+                                onValueChange = { paidText = it },
+                                label = { Text("জমা দিল কত? ($cur)") },
+                                placeholder = { Text("নগদ জমার পরিমাণ লিখুন (না দিলে ০ = বাকি)") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                singleLine = true,
+                                isError = isOverPaid,
+                                modifier = Modifier.fillMaxWidth().testTag("memo_paid_input")
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        paidText = CurrencyUtils.formatPaisaToPlainInput(grandTotalPaisa)
+                                    },
+                                    modifier = Modifier.weight(1f).testTag("memo_full_pay_button")
+                                ) {
+                                    Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("পূর্ণ টাকা জমা")
+                                }
+                                OutlinedButton(
+                                    onClick = { paidText = "0" },
+                                    modifier = Modifier.weight(1f).testTag("memo_full_credit_button")
+                                ) {
+                                    Icon(Icons.Default.AddCard, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("০ (সম্পূর্ণ বাকি)")
+                                }
+                            }
+
+                            if (isOverPaid) {
+                                Text(
+                                    text = "জমার পরিমাণ মোট বিলের (${CurrencyUtils.formatBdt(grandTotalPaisa, cur)}) চেয়ে বেশি হতে পারে না।",
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodySmall
                                 )
                             }
+
                             OutlinedTextField(
                                 value = notes,
                                 onValueChange = { notes = it },
@@ -855,45 +909,124 @@ fun SalesMemoScreen(
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
+
                             HorizontalDivider()
+
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("সর্বমোট বিল:", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                Text(CurrencyUtils.formatBdt(grandTotalPaisa, cur), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Text("নগদ জমা (ক্যাশবক্সে যাবে):", color = MaterialTheme.colorScheme.primary)
+                                Text(
+                                    CurrencyUtils.formatBdt(previewPaid, cur),
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("নগদ ক্যাশবক্সে যাবে:", color = MaterialTheme.colorScheme.primary)
-                                Text(CurrencyUtils.formatBdt(previewPaid, cur), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                Text(
+                                    text = if (previewOutstanding == 0L) "বাকি থাকছে:" else "বাকির খাতায় যুক্ত হবে:",
+                                    color = if (previewOutstanding == 0L) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                                )
+                                Text(
+                                    CurrencyUtils.formatBdt(previewOutstanding, cur),
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (previewOutstanding == 0L) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                                )
                             }
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("বকেয়া যুক্ত হবে:", color = MaterialTheme.colorScheme.error)
-                                Text(CurrencyUtils.formatBdt(previewOutstanding, cur), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = if (previewOutstanding == 0L) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                                } else {
+                                    MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = when {
+                                        previewOutstanding == 0L ->
+                                            "সম্পূর্ণ বিল পরিশোধ হয়েছে — কোনো বাকি থাকছে না (নগদ বিক্রি)।"
+                                        selectedCustomer != null ->
+                                            "কম জমা দেওয়ায় ${CurrencyUtils.formatBdt(previewOutstanding, cur)} স্বয়ংক্রিয়ভাবে '${selectedCustomer.name}'-এর বাকির খাতায় যুক্ত হবে।"
+                                        else ->
+                                            "কম জমা দেওয়ায় ${CurrencyUtils.formatBdt(previewOutstanding, cur)} বাকি থাকছে — কাস্টমার বাছাই বা নতুন যোগ করুন।"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.padding(10.dp)
+                                )
                             }
-                            Spacer(Modifier.height(4.dp))
+
+                            if (needsCustomerForDebt) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { showCustomerPicker = true },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("কাস্টমার বাছাই")
+                                    }
+                                    OutlinedButton(
+                                        onClick = { showQuickCreate = true },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("নতুন কাস্টমার")
+                                    }
+                                }
+                            }
+
                             Button(
                                 onClick = {
+                                    if (subtotalPaisa <= 0L) {
+                                        onMessage("সঠিক মোট টাকার পরিমাণ লিখুন")
+                                        return@Button
+                                    }
+                                    if (isOverPaid) {
+                                        onMessage("জমার পরিমাণ মোট বিলের চেয়ে বেশি হতে পারে না")
+                                        return@Button
+                                    }
+                                    if (needsCustomerForDebt) {
+                                        onMessage("বাকি রাখতে হলে কাস্টমার নির্বাচন করুন অথবা 'পূর্ণ টাকা জমা' চাপুন")
+                                        showCustomerPicker = true
+                                        return@Button
+                                    }
+                                    val itemsToSave = if (items.isNotEmpty()) items else listOf(
+                                        MemoLineDraft(
+                                            localId = UUID.randomUUID().toString(),
+                                            productName = "মোট হিসাব",
+                                            quantityText = "1",
+                                            unit = "পিস",
+                                            unitPriceText = CurrencyUtils.formatPaisaToPlainInput(subtotalPaisa),
+                                            quantityMillis = 1000L,
+                                            unitPricePaisa = subtotalPaisa,
+                                            lineTotalPaisa = subtotalPaisa
+                                        )
+                                    )
                                     onCreateMemo(
-                                        saleType,
+                                        derivedSaleType,
                                         selectedCustomer?.id,
                                         walkInName,
                                         walkInAddress,
-                                        items,
+                                        itemsToSave,
                                         discountPaisa,
-                                        paidInputPaisa,
+                                        previewPaid,
                                         notes,
                                         requestToken
                                     ) { saved ->
                                         createdMemo = saved
                                         items = emptyList()
+                                        directBillAmountText = ""
                                         discountText = ""
                                         paidText = ""
                                         notes = ""
                                         requestToken = UUID.randomUUID().toString()
                                     }
                                 },
-                                enabled = !isSubmitting,
+                                enabled = !isSubmitting && !isOverPaid && subtotalPaisa > 0L,
                                 modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag("memo_confirm_button")
                             ) {
-                                Text("মেমো সংরক্ষণ করুন")
+                                Text("হিসাব সংরক্ষণ করুন")
                             }
                         }
                     }
@@ -935,7 +1068,7 @@ fun SalesMemoScreen(
     createdMemo?.let { mwi ->
         AlertDialog(
             onDismissRequest = { createdMemo = null },
-            title = { Text("বিক্রয় মেমো (${mwi.memo.memoNumber})") },
+            title = { Text("বিক্রয় ও বাকি হিসাব সংরক্ষিত") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("ক্রেতা: ${mwi.memo.customerNameSnapshot}", fontWeight = FontWeight.Bold)
@@ -946,16 +1079,24 @@ fun SalesMemoScreen(
             },
             confirmButton = {
                 Button(onClick = {
-                    previewPdfFile = pdfGenerator.generateMemoPdf(mwi, settings)
-                    createdMemo = null
+                    try {
+                        previewPdfFile = pdfGenerator.generateMemoPdf(mwi, settings)
+                        createdMemo = null
+                    } catch (e: Exception) {
+                        onMessage("পিডিএফ তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                    }
                 }) {
                     Text("পিডিএফ / প্রিন্ট / শেয়ার")
                 }
             },
             dismissButton = {
                 TextButton(onClick = {
-                    val f = pdfGenerator.generateMemoPdf(mwi, settings)
-                    pdfGenerator.printPdfFile(context, f, "মেমো_${mwi.memo.memoNumber}")
+                    try {
+                        val f = pdfGenerator.generateMemoPdf(mwi, settings)
+                        pdfGenerator.printPdfFile(context, f, "হিসাব_${mwi.memo.customerNameSnapshot}")
+                    } catch (e: Exception) {
+                        onMessage("প্রিন্ট করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                    }
                 }) {
                     Text("প্রিন্ট")
                 }

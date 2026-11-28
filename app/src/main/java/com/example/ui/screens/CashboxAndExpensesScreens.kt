@@ -49,7 +49,11 @@ fun CashboxScreen(
                 onBack = onBack,
                 actions = {
                     IconButton(onClick = {
-                        previewPdfFile = pdfGenerator.generateCashboxReportPdf(summary, transactions, settings)
+                        try {
+                            previewPdfFile = pdfGenerator.generateCashboxReportPdf(summary, transactions, settings)
+                        } catch (e: Exception) {
+                            onMessage("পিডিএফ তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                        }
                     }) {
                         Icon(Icons.Default.PictureAsPdf, contentDescription = "ক্যাশবক্স পিডিএফ")
                     }
@@ -148,7 +152,7 @@ fun CashboxScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "${tx.transactionCode} • ${CurrencyUtils.formatDateTimeBn(tx.createdAt)}",
+                                    text = CurrencyUtils.formatDateTimeBn(tx.createdAt),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -326,7 +330,11 @@ fun ExpensesScreen(
                 onBack = onBack,
                 actions = {
                     IconButton(onClick = {
-                        previewPdfFile = pdfGenerator.generateExpenseReportPdf(expenses, settings)
+                        try {
+                            previewPdfFile = pdfGenerator.generateExpenseReportPdf(expenses, settings)
+                        } catch (e: Exception) {
+                            onMessage("পিডিএফ তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                        }
                     }) {
                         Icon(Icons.Default.PictureAsPdf, contentDescription = "খরচের পিডিএফ")
                     }
@@ -383,7 +391,7 @@ fun ExpensesScreen(
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        "${exp.expenseCode} • ${CurrencyUtils.formatDateTimeBn(exp.createdAt)}",
+                                        CurrencyUtils.formatDateTimeBn(exp.createdAt),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -429,7 +437,7 @@ fun ExpensesScreen(
 
     editingExpense?.let { target ->
         ExpenseFormDialog(
-            title = "খরচ সংশোধন (${target.expenseCode})",
+            title = "খরচ সংশোধন",
             categories = allCategories,
             currencySymbol = cur,
             initial = target,

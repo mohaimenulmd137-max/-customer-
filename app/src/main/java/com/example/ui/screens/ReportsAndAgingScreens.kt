@@ -68,7 +68,11 @@ fun DailyReportScreen(
                         Icon(Icons.Default.CalendarMonth, contentDescription = "তারিখ নির্বাচন")
                     }
                     IconButton(onClick = {
-                        previewPdfFile = pdfGenerator.generateDailyReportPdf(report, settings)
+                        try {
+                            previewPdfFile = pdfGenerator.generateDailyReportPdf(report, settings)
+                        } catch (e: Exception) {
+                            onMessage("পিডিএফ তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                        }
                     }) {
                         Icon(Icons.Default.PictureAsPdf, contentDescription = "পিডিএফ")
                     }
@@ -189,7 +193,11 @@ fun MonthlyReportScreen(
                 onBack = onBack,
                 actions = {
                     IconButton(onClick = {
-                        previewPdfFile = pdfGenerator.generatePeriodReportPdf("মাসিক ও কাস্টম রিপোর্ট", report, settings)
+                        try {
+                            previewPdfFile = pdfGenerator.generatePeriodReportPdf("মাসিক ও কাস্টম রিপোর্ট", report, settings)
+                        } catch (e: Exception) {
+                            onMessage("পিডিএফ তৈরি করা যায়নি: ${e.message ?: "ত্রুটি"}")
+                        }
                     }) {
                         Icon(Icons.Default.PictureAsPdf, contentDescription = "পিডিএফ")
                     }
@@ -259,7 +267,7 @@ fun MonthlyReportScreen(
                             ) {
                                 Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                                     Column(Modifier.weight(1f)) {
-                                        Text("${m.memoNumber} • ${m.customerNameSnapshot}", fontWeight = FontWeight.Bold)
+                                        Text(m.customerNameSnapshot, fontWeight = FontWeight.Bold)
                                         Text(CurrencyUtils.formatDateTimeBn(m.createdAt), style = MaterialTheme.typography.labelSmall)
                                     }
                                     Column(horizontalAlignment = Alignment.End) {
@@ -278,7 +286,7 @@ fun MonthlyReportScreen(
                             ) {
                                 Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                                     Column {
-                                        Text("জমা: ${p.receiptNumber}", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                        Text(if (p.notes.contains("হালখাতা")) "হালখাতা জমা" else "জমা", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                                         Text(CurrencyUtils.formatDateTimeBn(p.createdAt), style = MaterialTheme.typography.labelSmall)
                                     }
                                     Text(CurrencyUtils.formatBdt(p.amountPaisa, cur), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
@@ -292,7 +300,7 @@ fun MonthlyReportScreen(
                             ) {
                                 Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                                     Column {
-                                        Text("বাকি: ${c.transactionCode} (${c.description})", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                                        Text("বাকি (${c.description})", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
                                         Text(CurrencyUtils.formatDateTimeBn(c.createdAt), style = MaterialTheme.typography.labelSmall)
                                     }
                                     Text(CurrencyUtils.formatBdt(c.amountPaisa, cur), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
@@ -325,7 +333,7 @@ fun MonthlyReportScreen(
                             ) {
                                 Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                                     Column(Modifier.weight(1f)) {
-                                        Text("${row.customer.name} (${row.customer.customerCode})", fontWeight = FontWeight.Bold)
+                                        Text(row.customer.name, fontWeight = FontWeight.Bold)
                                         Text(
                                             "বিক্রি: ${CurrencyUtils.formatBdt(row.periodSalesPaisa, cur)} • জমা: ${CurrencyUtils.formatBdt(row.periodPaymentsPaisa, cur)}",
                                             style = MaterialTheme.typography.bodySmall
@@ -442,7 +450,7 @@ fun DebtAgingScreen(
                         ) {
                             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    Text("${row.customer.name} (${row.customer.customerCode})", fontWeight = FontWeight.Bold)
+                                    Text(row.customer.name, fontWeight = FontWeight.Bold)
                                     Text(
                                         CurrencyUtils.formatBdt(row.outstandingPaisa, cur),
                                         fontWeight = FontWeight.Bold,
@@ -485,19 +493,23 @@ fun RemindersScreen(
     }
 
     fun sendManualSms(customer: CustomerEntity) {
-        val text = "আসসালামু আলাইকুম ${customer.name}, ${settings.shopName}-এ আপনার বকেয়া ${CurrencyUtils.formatBdt(customer.currentBalancePaisa, cur)}। অনুগ্রহ করে সুবিধামতো পরিশোধ করুন।"
-        val uri = Uri.parse("smsto:${customer.mobile}")
-        val intent = Intent(Intent.ACTION_SENDTO, uri).apply { putExtra("sms_body", text) }
-        context.startActivity(intent)
+        try {
+            val text = "আসসালামু আলাইকুম ${customer.name}, ${settings.shopName}-এ আপনার বকেয়া ${CurrencyUtils.formatBdt(customer.currentBalancePaisa, cur)}। অনুগ্রহ করে সুবিধামতো পরিশোধ করুন।"
+            val uri = Uri.parse("smsto:${customer.mobile}")
+            val intent = Intent(Intent.ACTION_SENDTO, uri).apply { putExtra("sms_body", text) }
+            context.startActivity(intent)
+        } catch (_: Exception) { }
     }
 
     fun shareManualMessage(customer: CustomerEntity) {
-        val text = "আসসালামু আলাইকুম ${customer.name}, ${settings.shopName}-এ আপনার বকেয়া ${CurrencyUtils.formatBdt(customer.currentBalancePaisa, cur)}। অনুগ্রহ করে সুবিধামতো পরিশোধ করুন।"
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_TEXT, text)
-        }
-        context.startActivity(Intent.createChooser(intent, "তাগাদা বার্তা পাঠান"))
+        try {
+            val text = "আসসালামু আলাইকুম ${customer.name}, ${settings.shopName}-এ আপনার বকেয়া ${CurrencyUtils.formatBdt(customer.currentBalancePaisa, cur)}। অনুগ্রহ করে সুবিধামতো পরিশোধ করুন।"
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            context.startActivity(Intent.createChooser(intent, "তাগাদা বার্তা পাঠান"))
+        } catch (_: Exception) { }
     }
 
     Scaffold(
@@ -563,7 +575,7 @@ fun RemindersScreen(
                     ) {
                         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("${c.name} (${c.customerCode})", fontWeight = FontWeight.Bold)
+                                Text(c.name, fontWeight = FontWeight.Bold)
                                 Text(CurrencyUtils.formatBdt(row.outstandingPaisa, cur), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
                             }
                             Text(

@@ -88,6 +88,9 @@ interface MemoDao {
     @Query("DELETE FROM memos WHERE halKhataPeriodId = :periodId")
     suspend fun deleteMemosByPeriod(periodId: Long)
 
+    @Query("DELETE FROM memos WHERE createdAt < :cutoff")
+    suspend fun deleteMemosBefore(cutoff: Long): Int
+
     @Query("DELETE FROM memos")
     suspend fun deleteAllMemos()
 }
@@ -123,6 +126,9 @@ interface PaymentDao {
 
     @Query("DELETE FROM payments WHERE halKhataPeriodId = :periodId")
     suspend fun deleteByPeriod(periodId: Long)
+
+    @Query("DELETE FROM payments WHERE createdAt < :cutoff")
+    suspend fun deleteBefore(cutoff: Long): Int
 
     @Query("DELETE FROM payments")
     suspend fun deleteAll()
@@ -160,6 +166,9 @@ interface CreditTransactionDao {
     @Query("DELETE FROM credit_transactions WHERE halKhataPeriodId = :periodId")
     suspend fun deleteByPeriod(periodId: Long)
 
+    @Query("DELETE FROM credit_transactions WHERE createdAt < :cutoff")
+    suspend fun deleteBefore(cutoff: Long): Int
+
     @Query("DELETE FROM credit_transactions")
     suspend fun deleteAll()
 }
@@ -193,6 +202,9 @@ interface ExpenseDao {
     @Query("DELETE FROM expenses WHERE halKhataPeriodId = :periodId")
     suspend fun deleteByPeriod(periodId: Long)
 
+    @Query("DELETE FROM expenses WHERE createdAt < :cutoff")
+    suspend fun deleteBefore(cutoff: Long): Int
+
     @Query("DELETE FROM expenses")
     suspend fun deleteAll()
 }
@@ -225,6 +237,9 @@ interface CashboxDao {
 
     @Query("DELETE FROM cashbox_transactions WHERE halKhataPeriodId = :periodId")
     suspend fun deleteByPeriod(periodId: Long)
+
+    @Query("DELETE FROM cashbox_transactions WHERE createdAt < :cutoff")
+    suspend fun deleteBefore(cutoff: Long): Int
 
     @Query("DELETE FROM cashbox_transactions")
     suspend fun deleteAll()
@@ -264,6 +279,12 @@ interface HalKhataDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertBalances(balances: List<HalKhataCustomerBalanceEntity>)
+
+    @Query("DELETE FROM hal_khata_customer_balances WHERE periodId = :periodId")
+    suspend fun deleteBalancesByPeriod(periodId: Long)
+
+    @Query("DELETE FROM hal_khata_periods WHERE id = :periodId")
+    suspend fun deletePeriodById(periodId: Long)
 
     @Query("DELETE FROM hal_khata_customer_balances")
     suspend fun deleteAllBalances()
@@ -313,6 +334,18 @@ interface TemporaryCustomerDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAllMemos(memos: List<TemporaryMemoEntity>)
 
+    @Query("DELETE FROM temporary_memos WHERE tempCustomerId = :tempCustomerId")
+    suspend fun deleteMemosByTempCustomer(tempCustomerId: Long)
+
+    @Query("DELETE FROM temporary_customers WHERE id = :id")
+    suspend fun deleteCustomerById(id: Long)
+
+    @Query("DELETE FROM temporary_memos WHERE createdAt < :cutoff")
+    suspend fun deleteMemosBefore(cutoff: Long): Int
+
+    @Query("DELETE FROM temporary_customers WHERE isConverted = 1 AND updatedAt < :cutoff")
+    suspend fun deleteConvertedBefore(cutoff: Long): Int
+
     @Query("DELETE FROM temporary_memos")
     suspend fun deleteAllMemos()
 
@@ -333,6 +366,12 @@ interface AuditLogDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(logs: List<AuditLogEntity>)
+
+    @Query("DELETE FROM audit_logs WHERE (entityType = 'HAL_KHATA' AND entityId = :periodId) OR (entityType != 'HAL_KHATA' AND createdAt < :closedAt)")
+    suspend fun deleteLogsForPurgedPeriod(periodId: Long, closedAt: Long)
+
+    @Query("DELETE FROM audit_logs WHERE createdAt < :cutoff")
+    suspend fun deleteBefore(cutoff: Long): Int
 
     @Query("DELETE FROM audit_logs")
     suspend fun deleteAll()
@@ -357,6 +396,12 @@ interface BackupMetadataDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(items: List<BackupMetadataEntity>)
+
+    @Query("DELETE FROM backup_metadata WHERE filePath = :filePath")
+    suspend fun deleteByFilePath(filePath: String)
+
+    @Query("DELETE FROM backup_metadata WHERE createdAt < :cutoff")
+    suspend fun deleteBefore(cutoff: Long): Int
 
     @Query("DELETE FROM backup_metadata")
     suspend fun deleteAll()

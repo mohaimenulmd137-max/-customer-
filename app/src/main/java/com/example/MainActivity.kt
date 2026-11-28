@@ -142,7 +142,7 @@ private fun BakirKhataRootScaffold(viewModel: MainViewModel) {
                             }
                         },
                         icon = { Icon(Icons.AutoMirrored.Filled.ReceiptLong, contentDescription = "মেমো") },
-                        label = { Text("বিক্রয় মেমো") }
+                        label = { Text("বিক্রয় হিসাব") }
                     )
                     NavigationBarItem(
                         selected = currentRoute == NavRoutes.DAILY_REPORT,
@@ -201,15 +201,24 @@ private fun BakirKhataRootScaffold(viewModel: MainViewModel) {
                     arguments = listOf(navArgument("customerId") { type = NavType.LongType })
                 ) { backStack ->
                     val customerId = backStack.arguments?.getLong("customerId") ?: 0L
+                    var selectedPeriodId by remember(customerId) { mutableStateOf<Long?>(null) }
                     val customer by viewModel.observeCustomer(customerId).collectAsStateWithLifecycle(initialValue = null)
-                    val entries by viewModel.observeCustomerLedger(customerId).collectAsStateWithLifecycle(initialValue = emptyList())
+                    val entries by remember(customerId, selectedPeriodId) {
+                        viewModel.observeCustomerLedger(customerId, selectedPeriodId)
+                    }.collectAsStateWithLifecycle(initialValue = emptyList())
 
                     CustomerLedgerScreen(
                         customer = customer,
                         entries = entries,
+                        halKhataPeriods = halKhataPeriods,
+                        activePeriodId = activeHalKhata?.id,
+                        selectedPeriodId = selectedPeriodId,
+                        onSelectPeriod = { selectedPeriodId = it },
                         settings = settings,
                         pdfGenerator = viewModel.pdfGenerator,
-                        onGenerateCustomerPdf = { viewModel.generateSingleCustomerLedgerPdf(it) },
+                        onGenerateCustomerPdf = { cust ->
+                            viewModel.generateSingleCustomerLedgerPdf(cust, selectedPeriodId)
+                        },
                         onBack = { navController.popBackStack() },
                         onQuickPayment = { id -> navController.navigate(NavRoutes.quickPayment(id)) },
                         onQuickCredit = { id -> navController.navigate(NavRoutes.quickCredit(id)) },
@@ -236,9 +245,6 @@ private fun BakirKhataRootScaffold(viewModel: MainViewModel) {
                         settings = settings,
                         isSubmitting = isSubmitting,
                         pdfGenerator = viewModel.pdfGenerator,
-                        onCreateCustomerInline = { name, addr, mob, nick, notes, opening, onDone ->
-                            viewModel.createCustomer(name, addr, mob, nick, notes, opening, onDone)
-                        },
                         onConfirmPayment = { custId, amt, notes, token, onSuccess ->
                             viewModel.recordQuickPayment(custId, amt, notes, token, onSuccess)
                         },
@@ -378,10 +384,20 @@ private fun BakirKhataRootScaffold(viewModel: MainViewModel) {
                         periods = halKhataPeriods,
                         activePeriod = activeHalKhata,
                         customers = customers,
+                        tempCustomers = tempCustomers,
+                        payments = payments,
                         settings = settings,
                         isSubmitting = isSubmitting,
                         pdfGenerator = viewModel.pdfGenerator,
                         observeBalances = { viewModel.observeHalKhataBalances(it) },
+                        onRecordCustomerPayment = { custId, amt, notes, token, onSuccess ->
+                            viewModel.recordQuickPayment(custId, amt, notes, token, onSuccess)
+                        },
+                        onRecordTempPayment = { tempId, amt, notes, onDone ->
+                            viewModel.addTemporaryEntry(tempId, "PAYMENT", "হালখাতা জমা", amt, amt, notes, onDone)
+                        },
+                        onOpenPermanentLedger = { id -> navController.navigate(NavRoutes.customerLedger(id)) },
+                        onOpenTempCustomers = { navController.navigate(NavRoutes.TEMP_CUSTOMERS) },
                         onUpdateActiveMeta = { n, d, s, e -> viewModel.updateActiveHalKhataMeta(n, d, s, e) },
                         onClosePeriod = { n, d, e, onDone -> viewModel.closeHalKhataPeriod(n, d, e, onDone) },
                         onMessage = { viewModel.postMessage(it) },
@@ -442,6 +458,11 @@ private fun BakirKhataRootScaffold(viewModel: MainViewModel) {
                         onSetBackupFrequency = { freq -> viewModel.updateSettings { it.copy(backupFrequency = freq) } },
                         onPreviewBackupUri = { uri, name, cb -> viewModel.previewBackupUri(uri, name, cb) },
                         onRestoreFromUri = { uri, name, cb -> viewModel.restoreFromUri(uri, name, cb) },
+                        onPreviewBackupFile = { file, cb -> viewModel.previewBackupFile(file, cb) },
+                        onRestoreFromFile = { file, cb -> viewModel.restoreFromFile(file, cb) },
+                        onCreateCompactCode = { cb -> viewModel.createCompactBackupCode(cb) },
+                        onPreviewCompactCode = { code, cb -> viewModel.previewCompactBackupCode(code, cb) },
+                        onRestoreFromCompactCode = { code, cb -> viewModel.restoreFromCompactCode(code, cb) },
                         onMessage = { viewModel.postMessage(it) },
                         onBack = { navController.popBackStack() }
                     )

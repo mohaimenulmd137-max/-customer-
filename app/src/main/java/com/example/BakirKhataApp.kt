@@ -22,6 +22,7 @@ class BakirKhataApp : Application() {
     override fun onCreate() {
         super.onCreate()
         appScope.launch {
+            runCatching { repository.purgeRecordsOlderThanTwoYears() }
             val settings = database.appSettingsDao().getSettings()
             if (settings != null) {
                 BackupManager.scheduleAutoBackup(this@BakirKhataApp, settings.backupFrequency)
